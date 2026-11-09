@@ -1,0 +1,3 @@
+# Decoupled Telemetry Seam with Unavailable Status for Phase 1
+
+Displaying real-time WireGuard handshake and transfer statistics requires elevated privileges (`NET_ADMIN` or host network access) to query the kernel module, which directly violates the principle of least privilege for the web dashboard. We decided to define an independent `TelemetryProvider` protocol with a `NoOpTelemetryProvider` for Phase 1 that returns an explicit "Unavailable" status for all dynamic telemetry. This enables accurate, truthful metadata reporting today while allowing Phase 2 to introduce an isolated, read-only telemetry bridge without modifying the dashboard container's unprivileged model.

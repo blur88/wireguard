@@ -1,0 +1,3 @@
+# Read-Only Companion Architecture with Decoupled Management Seam
+
+The dashboard needs to integrate with existing LinuxServer WireGuard deployments without risking VPN service disruption, exposing the host Docker socket, or requiring root container privileges. We decided to deploy the dashboard as an unprivileged companion container mounting `/config:ro` in Phase 1, abstracting all configuration and peer operations behind a `PeerBackend` interface seam. This guarantees zero-risk read-only operation today while isolating future Phase 2 write and lifecycle management into a separate, tightly controlled component.

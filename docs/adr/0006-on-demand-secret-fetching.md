@@ -1,0 +1,3 @@
+# On-Demand Secret Fetching to Prevent Initial Load Exposure
+
+Including WireGuard private keys in initial page templates or bulk list API responses introduces accidental exposure via DOM scraping, client-side caches, and browser memory dumps. We decided that initial page renders and peer list APIs will only deliver sanitized `PeerMetadata` (names, assigned IPs, endpoints, DNS), completely omitting private keys. Full configuration content and private keys are retrieved strictly on-demand via authenticated single-peer endpoints triggered by explicit user actions (QR modal display, download, or copy).

@@ -1,0 +1,3 @@
+# Strict Security Headers and HMAC Double-Submit CSRF Without Database
+
+The dashboard serves private cryptographic keys and network configurations over HTTP, making it a critical target for cross-site request forgery and clickjacking. We decided to enforce strict security headers (`Content-Security-Policy: default-src 'self'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `Cache-Control: no-store`) across all sensitive routes, paired with session-bound HMAC double-submit CSRF tokens on state-changing operations like POST `/logout`. This provides robust browser defense-in-depth without external security middleware or database storage.
