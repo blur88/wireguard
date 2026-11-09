@@ -1,0 +1,1 @@
+"""WireGuard Dashboard test package."""

@@ -1,8 +1,9 @@
+import contextlib
 import shutil
 import socket
 import subprocess
 import time
-from typing import Generator
+from typing import Dict, Generator, Optional, Tuple
 import urllib.error
 import urllib.request
 import uuid
@@ -45,6 +46,41 @@ def _wait_for_healthz(url: str, timeout: float = 15.0) -> bool:
     return False
 
 
+@contextlib.contextmanager
+def running_container(
+    image: str,
+    port: int = 8080,
+    env: Optional[Dict[str, str]] = None,
+    read_only: bool = False,
+) -> Generator[Tuple[str, int], None, None]:
+    """Context manager to spawn, verify readiness of, and reliably teardown a test container."""
+    host_port = get_free_port()
+    container_name = f"wg-test-{uuid.uuid4().hex[:8]}"
+
+    cmd = [
+        "docker", "run", "-d",
+        "--name", container_name,
+        "-p", f"127.0.0.1:{host_port}:{port}",
+    ]
+    if read_only:
+        cmd.extend(["--read-only", "--tmpfs", "/tmp", "--security-opt", "no-new-privileges:true"])
+    if env:
+        for k, v in env.items():
+            cmd.extend(["-e", f"{k}={v}"])
+    cmd.append(image)
+
+    subprocess.run(cmd, check=True, capture_output=True)
+
+    try:
+        url = f"http://127.0.0.1:{host_port}/healthz"
+        if not _wait_for_healthz(url):
+            logs = subprocess.run(["docker", "logs", container_name], capture_output=True, text=True)
+            pytest.fail(f"Container failed to respond to /healthz.\nLogs:\n{logs.stdout}\n{logs.stderr}")
+        yield container_name, host_port
+    finally:
+        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
+
+
 pytestmark = pytest.mark.skipif(
     not is_docker_available(),
     reason="Docker daemon is not available in test environment",
@@ -84,54 +120,20 @@ def test_container_runs_as_non_root(docker_image: str) -> None:
 
 
 def test_container_default_port_healthz(docker_image: str) -> None:
-    host_port = get_free_port()
-    container_name = f"wg-test-default-{host_port}"
-
-    run_cmd = [
-        "docker", "run", "-d",
-        "--name", container_name,
-        "-p", f"127.0.0.1:{host_port}:8080",
-        "--security-opt", "no-new-privileges:true",
-        "--read-only",
-        "--tmpfs", "/tmp",
-        docker_image,
-    ]
-
-    subprocess.run(run_cmd, check=True, capture_output=True)
-
-    try:
-        url = f"http://127.0.0.1:{host_port}/healthz"
-        if not _wait_for_healthz(url):
-            logs = subprocess.run(["docker", "logs", container_name], capture_output=True, text=True)
-            pytest.fail(f"Container failed to respond to /healthz.\nLogs:\n{logs.stdout}\n{logs.stderr}")
-
-    finally:
-        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
+    with running_container(docker_image, port=8080, read_only=True) as (_, host_port):
+        with urllib.request.urlopen(f"http://127.0.0.1:{host_port}/healthz", timeout=2) as resp:
+            assert resp.status == 200
+            body = resp.read().decode("utf-8")
+            assert '{"status":"ok"}' in body.replace(" ", "")
 
 
 def test_container_custom_port(docker_image: str) -> None:
-    host_port = get_free_port()
-    container_port = 9050
-    container_name = f"wg-test-custom-{host_port}"
-
-    run_cmd = [
-        "docker", "run", "-d",
-        "--name", container_name,
-        "-e", f"PORT={container_port}",
-        "-p", f"127.0.0.1:{host_port}:{container_port}",
-        docker_image,
-    ]
-
-    subprocess.run(run_cmd, check=True, capture_output=True)
-
-    try:
-        url = f"http://127.0.0.1:{host_port}/healthz"
-        if not _wait_for_healthz(url):
-            logs = subprocess.run(["docker", "logs", container_name], capture_output=True, text=True)
-            pytest.fail(f"Container on custom PORT={container_port} failed.\nLogs:\n{logs.stdout}\n{logs.stderr}")
-
-    finally:
-        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
+    custom_port = 9050
+    with running_container(
+        docker_image, port=custom_port, env={"PORT": str(custom_port)}
+    ) as (_, host_port):
+        with urllib.request.urlopen(f"http://127.0.0.1:{host_port}/healthz", timeout=2) as resp:
+            assert resp.status == 200
 
 
 def test_container_invalid_port_fails_safely(docker_image: str) -> None:

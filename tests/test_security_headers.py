@@ -1,40 +1,46 @@
 from typing import Dict
 from fastapi.testclient import TestClient
 import pytest
+from tests.helpers import assert_security_headers
+from wireguard_dashboard.app import create_app
 
 
-def test_security_headers_present_on_200(
-    client: TestClient, security_headers: Dict[str, str]
+@pytest.mark.parametrize(
+    "method,path,expected_status",
+    [
+        ("GET", "/healthz", 200),
+        ("GET", "/non-existent-endpoint-xyz", 404),
+        ("POST", "/healthz", 405),
+    ],
+)
+def test_security_headers_across_standard_status_codes(
+    client: TestClient,
+    security_headers: Dict[str, str],
+    method: str,
+    path: str,
+    expected_status: int,
 ) -> None:
-    response = client.get("/healthz")
-    assert response.status_code == 200
-
-    for header_name, expected_value in security_headers.items():
-        assert header_name in response.headers, f"Missing header: {header_name}"
-        assert response.headers[header_name] == expected_value
+    response = client.request(method, path)
+    assert response.status_code == expected_status
+    assert_security_headers(response.headers, security_headers)
 
 
-def test_security_headers_present_on_404(
-    client: TestClient, security_headers: Dict[str, str]
-) -> None:
-    response = client.get("/non-existent-endpoint-xyz")
-    assert response.status_code == 404
+def test_security_headers_present_on_unhandled_500(security_headers: Dict[str, str]) -> None:
+    app = create_app()
 
-    for header_name, expected_value in security_headers.items():
-        assert header_name in response.headers, f"Missing header on 404: {header_name}"
-        assert response.headers[header_name] == expected_value
+    @app.get("/_test/unhandled-crash")
+    def crash_route() -> None:
+        raise RuntimeError("Simulated unhandled runtime failure in application")
 
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/_test/unhandled-crash")
 
-def test_security_headers_present_on_405(
-    client: TestClient, security_headers: Dict[str, str]
-) -> None:
-    # /healthz only supports GET, so POST should produce 405 Method Not Allowed
-    response = client.post("/healthz")
-    assert response.status_code == 405
+    assert response.status_code == 500
+    assert_security_headers(response.headers, security_headers)
 
-    for header_name, expected_value in security_headers.items():
-        assert header_name in response.headers, f"Missing header on 405: {header_name}"
-        assert response.headers[header_name] == expected_value
+    body = response.text.lower()
+    for sensitive_word in ("traceback", "runtimeerror", "simulated unhandled", "file \"/", "site-packages"):
+        assert sensitive_word not in body
 
 
 def test_error_responses_expose_no_stacktraces_or_paths(client: TestClient) -> None:

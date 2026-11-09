@@ -2,6 +2,7 @@ import re
 from typing import Dict
 from fastapi.testclient import TestClient
 import pytest
+from tests.helpers import assert_security_headers
 
 
 def test_root_renders_dark_mode_html_shell(client: TestClient) -> None:
@@ -32,7 +33,6 @@ def test_html_shell_has_no_external_cdn_or_third_party_dependencies(client: Test
 
 
 def test_static_stylesheet_served_locally(client: TestClient) -> None:
-    # Verify that the local stylesheet referenced by the HTML template exists and is served under 'self'
     response = client.get("/static/style.css")
     assert response.status_code == 200
     assert "text/css" in response.headers["content-type"]
@@ -44,7 +44,4 @@ def test_html_shell_includes_hardened_security_headers(
 ) -> None:
     response = client.get("/")
     assert response.status_code == 200
-
-    for header_name, expected_value in security_headers.items():
-        assert header_name in response.headers
-        assert response.headers[header_name] == expected_value
+    assert_security_headers(response.headers, security_headers)

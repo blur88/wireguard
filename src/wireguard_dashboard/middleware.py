@@ -25,8 +25,12 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
 
+        headers_started = False
+
         async def send_with_security_headers(message: Message) -> None:
+            nonlocal headers_started
             if message["type"] == "http.response.start":
+                headers_started = True
                 raw_headers: List[Tuple[bytes, bytes]] = list(message.get("headers", []))
                 filtered_headers = [
                     (name, value)
@@ -37,4 +41,29 @@ class SecurityHeadersMiddleware:
                 message["headers"] = filtered_headers
             await send(message)
 
-        await self.app(scope, receive, send_with_security_headers)
+        try:
+            await self.app(scope, receive, send_with_security_headers)
+        except Exception:
+            if not headers_started:
+                fallback_headers: List[Tuple[bytes, bytes]] = [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", b"36"),
+                ]
+                filtered = [
+                    (name, value)
+                    for name, value in fallback_headers
+                    if name.lower() not in OVERRIDDEN_SECURITY_HEADER_NAMES
+                ]
+                filtered.extend(HARDENED_SECURITY_HEADERS)
+                await send({
+                    "type": "http.response.start",
+                    "status": 500,
+                    "headers": filtered,
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": b'{"detail":"Internal Server Error"}',
+                    "more_body": False,
+                })
+            else:
+                raise

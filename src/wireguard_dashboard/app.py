@@ -1,9 +1,10 @@
 from pathlib import Path
 from typing import Any, Dict
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.types import ASGIApp
 from wireguard_dashboard.middleware import SecurityHeadersMiddleware
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -22,10 +23,24 @@ def create_app() -> FastAPI:
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-    app.add_middleware(SecurityHeadersMiddleware)
-
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception) -> Response:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal Server Error"},
+        )
+
+    # Wrap the outermost ASGI stack so security headers are guaranteed even on unhandled 500s
+    original_build_middleware_stack = app.build_middleware_stack
+
+    def custom_build_middleware_stack() -> ASGIApp:
+        stack = original_build_middleware_stack()
+        return SecurityHeadersMiddleware(stack)
+
+    app.build_middleware_stack = custom_build_middleware_stack  # type: ignore[method-assign]
 
     @app.get("/healthz")
     def healthz() -> Dict[str, Any]:
