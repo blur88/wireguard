@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>{% block title %}WireGuard Companion Dashboard{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  {% block head_extra %}{% endblock %}
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span>🛡️ WireGuard Companion</span>
+      <span class="badge">Read-Only</span>
+    </div>
+  </header>
+  <main>
+    {% block content %}
+    <div class="card">
+      <h1 class="card-title">WireGuard Dashboard</h1>
+      <p class="card-description">Companion service running and healthy.</p>
+    </div>
+    {% endblock %}
+  </main>
+  <footer>
+    <span>WireGuard Companion Dashboard &middot; Unprivileged &middot; Local Only</span>
+  </footer>
+</body>
+</html>

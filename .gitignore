@@ -40,3 +40,14 @@ Thumbs.db
 
 # Agent scratch files
 .scratch/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.venv/
+*.egg-info/
+dist/
+build/
