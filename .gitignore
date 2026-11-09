@@ -1,0 +1,42 @@
+# WireGuard keys and secrets
+*.key
+*.priv
+*private*key*
+*preshared*key*
+*.psk
+*.secret
+*.secrets
+
+# WireGuard configurations containing private keys
+# (Use .example or .template for configs safe to commit)
+*.conf
+!*.conf.example
+!*.conf.template
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.crt
+*.pfx
+*.p12
+
+# Operating System files
+.DS_Store
+Thumbs.db
+
+# Editors & IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Agent scratch files
+.scratch/
