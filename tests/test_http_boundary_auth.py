@@ -151,6 +151,7 @@ def test_reverse_proxy_internal_http_still_issues_secure_cookie() -> None:
     # Reverse proxy speaks HTTP internally to container
     proxy_client = TestClient(app, base_url="http://127.0.0.1:8080")
     csrf = _fetch_csrf_token(proxy_client)
+    # Explicitly retain Secure cookie in TestClient over insecure http:// backend simulation
     proxy_client.cookies.set(CSRF_COOKIE_NAME, csrf)
     res = proxy_client.post(
         "/login",

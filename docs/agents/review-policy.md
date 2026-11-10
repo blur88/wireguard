@@ -30,3 +30,8 @@ Every finding identified during code review must be explicitly classified into o
 - **No Churn on Accepted Findings**: Reviewers must respect previous review dispositions. Style preferences or previously accepted cosmetic items must not restart review cycles.
 - **No Suppression of Genuine Defects**: This policy does not suppress genuine new security vulnerabilities, regressions, specification breaches, or correctness issues.
 - **Upstream Skill Preservation**: Applied within repo governance; does not fork or modify upstream agent skills.
+
+## In-Memory Registries and Caches
+
+In-memory registries and caches must define an explicit retention or reclamation strategy. Reviewers must verify that the strategy is invoked through normal application operations and has behavioral test coverage. An unused cleanup method alone does not satisfy this requirement.
+
