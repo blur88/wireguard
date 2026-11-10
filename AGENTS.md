@@ -15,3 +15,7 @@ Single-context (`GLOSSARY.md` + `docs/adr/`). See `docs/agents/domain.md`.
 ### Review policy
 
 Five-category finding classification (`blocking`, `non-blocking`, `accepted`, `deferred`, `duplicate`). See `docs/agents/review-policy.md`.
+
+### Verification
+
+Run `./scripts/check.sh` for fast local verification (lint, format, strict typechecking, fast unit/HTTP tests). Run `./scripts/check.sh --full` for complete verification (includes Docker container integration tests). Complete verification (`--full`) is required before PR creation and merge; fast verification must not be represented as full verification.
