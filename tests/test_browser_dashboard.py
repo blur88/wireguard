@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import threading
@@ -234,31 +235,68 @@ async def run_test_server_and_browser(
             chrome_path,
             "--headless=new",
             f"--remote-debugging-port={cdp_port}",
+            "--remote-debugging-address=127.0.0.1",
             f"--user-data-dir={user_data_dir}",
             "--no-sandbox",
             "--disable-gpu",
             "--disable-dev-shm-usage",
+            "--disable-extensions",
+            "--disable-component-extensions-with-background-pages",
+            "--disable-default-apps",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "about:blank",
         ],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
     )
 
     cdp_client: CDPClient | None = None
     try:
         # Wait for Chrome CDP endpoint
         ws_url: str | None = None
-        for _ in range(100):
+        for _ in range(300):
+            if chrome_proc.poll() is not None:
+                err_output = (
+                    chrome_proc.stderr.read().decode("utf-8", errors="replace")
+                    if chrome_proc.stderr
+                    else ""
+                )
+                raise RuntimeError(
+                    f"Chrome process exited unexpectedly with code "
+                    f"{chrome_proc.returncode}: {err_output}"
+                )
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/list") as resp:
                     pages = json.loads(resp.read().decode())
-                    if pages:
-                        ws_url = pages[0]["webSocketDebuggerUrl"]
-                        break
+                    page_targets = [p for p in pages if p.get("type") == "page"]
+                    if page_targets:
+                        ws_url = page_targets[0].get("webSocketDebuggerUrl")
+                        if ws_url:
+                            break
+                    elif pages:
+                        for p in pages:
+                            url = p.get("url", "")
+                            if not url.startswith("chrome-extension://"):
+                                ws_url = p.get("webSocketDebuggerUrl")
+                                if ws_url:
+                                    break
+                        if ws_url:
+                            break
             except Exception:
-                await asyncio.sleep(0.05)
+                pass
+            await asyncio.sleep(0.05)
 
         if not ws_url:
-            raise RuntimeError("Chrome CDP endpoint did not become available")
+            err_output = (
+                chrome_proc.stderr.read().decode("utf-8", errors="replace")
+                if chrome_proc.stderr
+                else ""
+            )
+            raise RuntimeError(f"Chrome CDP endpoint did not become available: {err_output}")
 
         cdp_client = CDPClient(ws_url)
         await cdp_client.connect()
@@ -337,11 +375,17 @@ async def run_test_server_and_browser(
     finally:
         if cdp_client:
             await cdp_client.close()
-        chrome_proc.terminate()
+        try:
+            os.killpg(os.getpgid(chrome_proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            pass
         try:
             chrome_proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
-            chrome_proc.kill()
+            try:
+                os.killpg(os.getpgid(chrome_proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
         server.should_exit = True
         server_thread.join(timeout=2)
 
