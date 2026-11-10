@@ -15,11 +15,13 @@
       <span class="badge">Read-Only</span>
     </div>
     <div class="header-actions">
-      {% if csrf_token %}
       <form method="POST" action="/rescan" class="header-form">
+        {% if csrf_token %}
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% endif %}
         <button type="submit" class="btn-secondary">Rescan</button>
       </form>
+      {% if csrf_token %}
       <form method="POST" action="/logout" class="header-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" class="btn-logout">Logout</button>
@@ -59,6 +61,14 @@
             <span class="detail-label">Endpoint</span>
             <span class="detail-value">{{ item.meta.endpoint or "Not configured" }}</span>
           </div>
+          <div class="detail-row">
+            <span class="detail-label">Latest Handshake</span>
+            <span class="detail-value telemetry-unavailable">{{ item.telemetry.latest_handshake }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Transfer</span>
+            <span class="detail-value telemetry-unavailable">Rx: {{ item.telemetry.transfer_rx }} / Tx: {{ item.telemetry.transfer_tx }}</span>
+          </div>
         </div>
       </div>
       {% endfor %}
@@ -73,15 +83,15 @@
       <div class="empty-guidance">
         <h3>How to configure peers in LinuxServer WireGuard:</h3>
         <p>
-          Configure the <code>PEERS</code> environment variable on your LinuxServer WireGuard container (e.g. <code>PEERS=1</code> or <code>PEERS=phone,laptop</code>) and restart that container to generate client configuration directories.
+          Configure the <code>PEERS</code> environment variable on your LinuxServer WireGuard container (e.g. <code>PEERS=1</code> or <code>PEERS=phone,laptop</code>) and restart that container to generate peer directories.
         </p>
       </div>
-      {% if csrf_token %}
       <form method="POST" action="/rescan" class="empty-rescan-form">
+        {% if csrf_token %}
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% endif %}
         <button type="submit" class="btn-primary">Rescan Directory</button>
       </form>
-      {% endif %}
     </div>
     {% endif %}
     {% endblock %}

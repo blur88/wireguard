@@ -8,7 +8,7 @@ from typing import Protocol, runtime_checkable
 
 logger = logging.getLogger("wireguard_dashboard.peers")
 
-MAX_CONF_SIZE_BYTES = 64 * 1024  # 64 KB limit for WireGuard client configuration files
+MAX_CONF_SIZE_BYTES = 64 * 1024  # 64 KB limit for WireGuard peer configuration files
 EXCLUDED_NAMES = frozenset({"server", "templates", "wg_confs", "wg0.conf"})
 PEER_PATTERN = re.compile(r"^(peer\d+|peer_[a-zA-Z0-9_-]+)$")
 
@@ -47,7 +47,7 @@ def _natural_sort_key(s: str) -> list[int | str]:
 
 
 def _parse_sanitized_conf(content: str) -> tuple[str | None, str | None, str | None]:
-    """Parse a WireGuard client configuration and extract only non-sensitive metadata.
+    """Parse a WireGuard peer configuration and extract only non-sensitive metadata.
 
     Returns:
         (address, dns, endpoint)
@@ -72,6 +72,12 @@ def _parse_sanitized_conf(content: str) -> tuple[str | None, str | None, str | N
         key, _, value = line.partition("=")
         key = key.strip().lower()
         val = value.strip()
+
+        # Strip any inline comments
+        if "#" in val:
+            val = val.split("#", 1)[0].strip()
+        if ";" in val:
+            val = val.split(";", 1)[0].strip()
 
         # Strict security filter: Never extract or store cryptographic keys
         if key in ("privatekey", "presharedkey", "publickey"):

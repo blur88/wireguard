@@ -95,6 +95,9 @@ def test_dashboard_renders_discovered_peer_cards_and_telemetry_unavailable(tmp_p
 
     # Telemetry badge
     assert "Unavailable" in html
+    assert "Latest Handshake" in html
+    assert "Transfer" in html
+    assert "Rx: Unavailable / Tx: Unavailable" in html
 
     # Absolute guarantee: No secrets leaked in HTML
     assert "SUPER_SECRET" not in html
@@ -256,6 +259,7 @@ def test_auth_disabled_dashboard_and_rescan(tmp_path: Path) -> None:
     res = client.get("/")
     assert res.status_code == 200
     assert "peer1" in res.text
+    assert 'action="/rescan"' in res.text  # Rescan button renders even when auth is disabled
 
     # Rescan works in auth-disabled mode
     res_post = client.post("/rescan", follow_redirects=False)

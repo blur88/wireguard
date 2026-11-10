@@ -259,3 +259,45 @@ def test_unreadable_file_or_dir_handled_gracefully(tmp_path: Path) -> None:
         assert isinstance(peers, list)
     finally:
         conf_file.chmod(0o644)
+
+
+def test_discovery_strips_inline_comments(tmp_path: Path) -> None:
+    peer_dir = tmp_path / "peer1"
+    peer_dir.mkdir()
+    (peer_dir / "peer1.conf").write_text(
+        "[Interface]\n"
+        "Address = 10.13.13.2/32 # primary client address\n"
+        "DNS = 1.1.1.1 ; fallback dns\n\n"
+        "[Peer]\n"
+        "Endpoint = vpn.example.com:51820 # remote endpoint\n"
+    )
+
+    backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
+    peers = backend.list_peers()
+    assert len(peers) == 1
+    p = peers[0]
+    assert p.address == "10.13.13.2/32"
+    assert p.dns == "1.1.1.1"
+    assert p.endpoint == "vpn.example.com:51820"
+
+
+def test_toctou_symlink_race_protection(tmp_path: Path) -> None:
+    # Verify descriptor-relative opening with O_NOFOLLOW prevents escapes
+    # even when paths are modified or linked dynamically
+    secret_dir = tmp_path / "secret_server"
+    secret_dir.mkdir()
+    (secret_dir / "server.conf").write_text("[Interface]\nPrivateKey = ROOT_PRIVATE_KEY\n")
+
+    peer_dir = tmp_path / "peer1"
+    peer_dir.mkdir()
+    conf_file = peer_dir / "peer1.conf"
+    conf_file.write_text("[Interface]\nAddress = 10.13.13.2/32\n")
+
+    backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
+
+    # Replace peer1.conf with symlink to secret
+    conf_file.unlink()
+    conf_file.symlink_to(secret_dir / "server.conf")
+
+    peers = backend.list_peers()
+    assert len(peers) == 0  # Symlink escape rejected via O_NOFOLLOW

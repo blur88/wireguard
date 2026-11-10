@@ -160,25 +160,67 @@ def create_app(
     def healthz() -> dict[str, Any]:
         return {"status": "ok"}
 
+    def _get_or_create_csrf_token(
+        request: Request,
+        session_id: str | None = None,
+    ) -> str | None:
+        if resolved_settings.auth_disabled:
+            return None
+        assert resolved_settings.session_secret is not None
+        existing_cookie = request.cookies.get(CSRF_COOKIE_NAME)
+        expected_session = session_id if (session_id and session_id != "auth_disabled") else None
+        if existing_cookie and verify_csrf_double_submit(
+            cookie_token=existing_cookie,
+            submitted_token=existing_cookie,
+            session_secret=resolved_settings.session_secret,
+            expected_session_id=expected_session,
+        ):
+            return existing_cookie
+        if session_id and session_id != "auth_disabled":
+            return create_session_csrf_token(
+                session_id=session_id,
+                session_secret=resolved_settings.session_secret,
+            )
+        return create_preauth_csrf_token(resolved_settings.session_secret)
+
+    async def _validate_csrf_request(
+        request: Request,
+        expected_session_id: str | None = None,
+    ) -> bool:
+        if resolved_settings.auth_disabled:
+            return True
+        assert resolved_settings.session_secret is not None
+        cookie_csrf = request.cookies.get(CSRF_COOKIE_NAME)
+        form_csrf: str | None = None
+        try:
+            form = await request.form()
+            raw_form_csrf = form.get(CSRF_FORM_FIELD)
+            if isinstance(raw_form_csrf, str) and raw_form_csrf:
+                form_csrf = raw_form_csrf
+        except Exception:
+            pass
+
+        header_csrf = request.headers.get(CSRF_HEADER_NAME)
+        submitted_csrf = form_csrf if form_csrf else header_csrf
+        expected_session = (
+            expected_session_id
+            if (expected_session_id and expected_session_id != "auth_disabled")
+            else None
+        )
+
+        return verify_csrf_double_submit(
+            cookie_token=cookie_csrf,
+            submitted_token=submitted_csrf,
+            session_secret=resolved_settings.session_secret,
+            expected_session_id=expected_session,
+        )
+
     @fastapi_app.get("/login", response_class=HTMLResponse)
     def login_page(request: Request) -> Response:
         if is_authenticated(request):
             return RedirectResponse(url="/", status_code=303)
 
-        csrf_token: str | None = None
-        if not resolved_settings.auth_disabled:
-            assert resolved_settings.session_secret is not None
-            existing_cookie = request.cookies.get(CSRF_COOKIE_NAME)
-            if existing_cookie and verify_csrf_double_submit(
-                cookie_token=existing_cookie,
-                submitted_token=existing_cookie,
-                session_secret=resolved_settings.session_secret,
-                expected_session_id=None,
-            ):
-                csrf_token = existing_cookie
-            else:
-                csrf_token = create_preauth_csrf_token(resolved_settings.session_secret)
-
+        csrf_token = _get_or_create_csrf_token(request, session_id=None)
         response = templates.TemplateResponse(
             request=request,
             name="login.html",
@@ -201,26 +243,16 @@ def create_app(
         assert stored_password_hash is not None
         assert credential_fingerprint is not None
 
-        form = await request.form()
-
         # CSRF check: Double-submit validation
-        cookie_csrf = request.cookies.get(CSRF_COOKIE_NAME)
-        form_csrf = form.get(CSRF_FORM_FIELD)
-        header_csrf = request.headers.get(CSRF_HEADER_NAME)
-        submitted_csrf = form_csrf if isinstance(form_csrf, str) and form_csrf else header_csrf
-
-        if not verify_csrf_double_submit(
-            cookie_token=cookie_csrf,
-            submitted_token=submitted_csrf,
-            session_secret=resolved_settings.session_secret,
-            expected_session_id=None,
-        ):
+        if not await _validate_csrf_request(request, expected_session_id=None):
             return Response(
                 status_code=403,
                 content="Forbidden: CSRF validation failed",
                 media_type="text/plain",
             )
 
+        form = await request.form()
+        cookie_csrf = request.cookies.get(CSRF_COOKIE_NAME)
         client_ip = get_client_ip(request)
 
         if not rate_limiter.is_allowed(client_ip):
@@ -301,28 +333,7 @@ def create_app(
         if not session_id:
             raise UnauthenticatedError()
 
-        assert resolved_settings.session_secret is not None
-
-        # CSRF check: Double-submit validation
-        cookie_csrf = request.cookies.get(CSRF_COOKIE_NAME)
-        form_csrf: str | None = None
-        try:
-            form = await request.form()
-            raw_form_csrf = form.get(CSRF_FORM_FIELD)
-            if isinstance(raw_form_csrf, str) and raw_form_csrf:
-                form_csrf = raw_form_csrf
-        except Exception:
-            pass
-
-        header_csrf = request.headers.get(CSRF_HEADER_NAME)
-        submitted_csrf = form_csrf if form_csrf else header_csrf
-
-        if not verify_csrf_double_submit(
-            cookie_token=cookie_csrf,
-            submitted_token=submitted_csrf,
-            session_secret=resolved_settings.session_secret,
-            expected_session_id=session_id,
-        ):
+        if not await _validate_csrf_request(request, expected_session_id=session_id):
             return Response(
                 status_code=403,
                 content="Forbidden: CSRF validation failed",
@@ -342,32 +353,12 @@ def create_app(
         if not session_id:
             raise UnauthenticatedError()
 
-        if not resolved_settings.auth_disabled:
-            assert resolved_settings.session_secret is not None
-            cookie_csrf = request.cookies.get(CSRF_COOKIE_NAME)
-            form_csrf: str | None = None
-            try:
-                form = await request.form()
-                raw_form_csrf = form.get(CSRF_FORM_FIELD)
-                if isinstance(raw_form_csrf, str) and raw_form_csrf:
-                    form_csrf = raw_form_csrf
-            except Exception:
-                pass
-
-            header_csrf = request.headers.get(CSRF_HEADER_NAME)
-            submitted_csrf = form_csrf if form_csrf else header_csrf
-
-            if not verify_csrf_double_submit(
-                cookie_token=cookie_csrf,
-                submitted_token=submitted_csrf,
-                session_secret=resolved_settings.session_secret,
-                expected_session_id=session_id if session_id != "auth_disabled" else None,
-            ):
-                return Response(
-                    status_code=403,
-                    content="Forbidden: CSRF validation failed",
-                    media_type="text/plain",
-                )
+        if not await _validate_csrf_request(request, expected_session_id=session_id):
+            return Response(
+                status_code=403,
+                content="Forbidden: CSRF validation failed",
+                media_type="text/plain",
+            )
 
         fresh_peers = active_peer_backend.rescan()
 
@@ -398,24 +389,8 @@ def create_app(
         dependencies=[Depends(require_authenticated)],
     )
     def index(request: Request) -> Response:
-        csrf_token: str | None = None
-        if not resolved_settings.auth_disabled:
-            assert resolved_settings.session_secret is not None
-            session_id = get_authenticated_session_id(request)
-            if session_id:
-                existing_cookie = request.cookies.get(CSRF_COOKIE_NAME)
-                if existing_cookie and verify_csrf_double_submit(
-                    cookie_token=existing_cookie,
-                    submitted_token=existing_cookie,
-                    session_secret=resolved_settings.session_secret,
-                    expected_session_id=session_id if session_id != "auth_disabled" else None,
-                ):
-                    csrf_token = existing_cookie
-                else:
-                    csrf_token = create_session_csrf_token(
-                        session_id=session_id,
-                        session_secret=resolved_settings.session_secret,
-                    )
+        session_id = get_authenticated_session_id(request)
+        csrf_token = _get_or_create_csrf_token(request, session_id=session_id)
 
         discovered = active_peer_backend.list_peers()
         peer_items = [
