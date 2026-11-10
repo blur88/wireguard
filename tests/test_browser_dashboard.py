@@ -302,21 +302,21 @@ def test_browser_reveal_configuration_explicit_action_and_safe_rendering(tmp_pat
             await browser.send("Page.navigate", {"url": f"{base_url}/"})
             await asyncio.sleep(0.5)
 
-            # 1. Before reveal: wrapper is hidden and code element is empty
-            wrapper_hidden_before = await browser.evaluate(
-                "document.getElementById('conf-wrapper-peer1').classList.contains('hidden')"
+            # 1. Before reveal: masked preview is shown, code element is empty and hidden
+            masked_vis_before = await browser.evaluate(
+                "!document.getElementById('conf-masked-peer1').classList.contains('hidden')"
             )
-            assert wrapper_hidden_before is True
+            assert masked_vis_before is True
             code_text_before = await browser.evaluate(
                 "document.getElementById('conf-code-peer1').textContent"
             )
             assert code_text_before == ""
 
-            # Copy button initially disabled
+            # Copy button is ready for one-click copy
             copy_disabled_before = await browser.evaluate(
                 "document.querySelector('[data-peer-id=\"peer1\"] .btn-copy').disabled"
             )
-            assert copy_disabled_before is True
+            assert copy_disabled_before is False
 
             browser.network_requests.clear()
 
@@ -339,33 +339,34 @@ def test_browser_reveal_configuration_explicit_action_and_safe_rendering(tmp_pat
             msg = f"Expected 1 config request, found: {browser.network_requests}"
             assert len(conf_requests) == 1, msg
 
-            # 3. Verify wrapper visible and text rendered inertly
-            wrapper_shown_after = await browser.evaluate(
-                "!document.getElementById('conf-wrapper-peer1').classList.contains('hidden')"
+            # 3. Verify masked placeholder hidden, code block revealed and rendered inertly
+            masked_hidden_after = await browser.evaluate(
+                "document.getElementById('conf-masked-peer1').classList.contains('hidden')"
             )
-            assert wrapper_shown_after is True
+            assert masked_hidden_after is True
 
             reveal_btn_text = await browser.evaluate(
                 "document.querySelector('[data-peer-id=\"peer1\"] .btn-reveal').textContent.trim()"
             )
             assert reveal_btn_text == "Hide Configuration"
 
-            # Copy button is now enabled
-            copy_disabled_after = await browser.evaluate(
-                "document.querySelector('[data-peer-id=\"peer1\"] .btn-copy').disabled"
-            )
-            assert copy_disabled_after is False
-
-            # 4. Click "Hide Configuration" to verify toggling back
+            # 4. Click "Hide Configuration" to verify purging secret and toggling masked view
             await browser.evaluate("""
                 document.querySelector('[data-peer-id="peer1"] .btn-reveal').click();
             """)
             await asyncio.sleep(0.1)
 
-            wrapper_hidden_again = await browser.evaluate(
-                "document.getElementById('conf-wrapper-peer1').classList.contains('hidden')"
+            # Assert sensitive text was purged from DOM upon hiding
+            code_text_purged = await browser.evaluate(
+                "document.getElementById('conf-code-peer1').textContent"
             )
-            assert wrapper_hidden_again is True
+            assert code_text_purged == ""
+
+            masked_restored = await browser.evaluate(
+                "!document.getElementById('conf-masked-peer1').classList.contains('hidden')"
+            )
+            assert masked_restored is True
+
             reveal_btn_revert = await browser.evaluate(
                 "document.querySelector('[data-peer-id=\"peer1\"] .btn-reveal').textContent.trim()"
             )
@@ -386,13 +387,7 @@ def test_browser_clipboard_copy_success_and_failure_feedback(tmp_path: Path) -> 
             await browser.send("Page.navigate", {"url": f"{base_url}/"})
             await asyncio.sleep(0.5)
 
-            # Reveal configuration first
-            await browser.evaluate(
-                "document.querySelector('[data-peer-id=\"peer1\"] .btn-reveal').click();"
-            )
-            await asyncio.sleep(0.3)
-
-            # 1. Successful copy mock
+            # 1. One-click copy directly from card without clicking Reveal first
             await browser.evaluate("""
                 window.__copiedText = null;
                 navigator.clipboard.writeText = async (text) => {
@@ -400,10 +395,14 @@ def test_browser_clipboard_copy_success_and_failure_feedback(tmp_path: Path) -> 
                 };
                 document.querySelector('[data-peer-id="peer1"] .btn-copy').click();
             """)
-            await asyncio.sleep(0.1)
+            for _ in range(30):
+                copied_text = await browser.evaluate("window.__copiedText")
+                if copied_text and "COPY_SECRET==" in copied_text:
+                    break
+                await asyncio.sleep(0.05)
 
-            copied_text = await browser.evaluate("window.__copiedText")
             assert "COPY_SECRET==" in copied_text
+            assert "[Interface]" in copied_text
 
             btn_copy_text = await browser.evaluate(
                 "document.querySelector('[data-peer-id=\"peer1\"] .btn-copy').textContent.trim()"

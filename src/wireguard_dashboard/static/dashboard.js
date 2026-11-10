@@ -3,9 +3,10 @@
  * Enforces strict security:
  * - Real-time client-side search without network requests.
  * - On-demand configuration retrieval triggered exclusively by explicit user action.
+ * - Strict content validation before clipboard operations.
  * - Inert text rendering (textContent) preventing XSS.
- * - Class-based visibility changes complying strictly with Content Security Policy (no inline styles).
- * - No local/sessionStorage caching of cryptographic secrets.
+ * - Zero client-side caching of secrets in memory, localStorage, or sessionStorage.
+ * - Full compliance with Content Security Policy (no inline styles or scripts).
  */
 (() => {
   "use strict";
@@ -14,6 +15,14 @@
     initSearchFilter();
     initConfigActions();
   });
+
+  function validateWireguardConf(text) {
+    if (typeof text !== "string" || !text.trim()) {
+      return false;
+    }
+    // Strict WireGuard client configuration validation: must contain [Interface]
+    return /(^|\n)\s*\[Interface\]/i.test(text);
+  }
 
   function initSearchFilter() {
     const searchInput = document.getElementById("peer-search");
@@ -63,10 +72,6 @@
   }
 
   function initConfigActions() {
-    // In-memory runtime cache for the active session view only
-    // Never persisted to localStorage or sessionStorage
-    const confCache = new Map();
-
     const cards = document.querySelectorAll(".peer-card");
 
     cards.forEach((card) => {
@@ -75,86 +80,88 @@
 
       const revealBtn = card.querySelector(".btn-reveal");
       const copyBtn = card.querySelector(".btn-copy");
-      const previewWrapper = document.getElementById(`conf-wrapper-${peerId}`);
+      const maskedElem = document.getElementById(`conf-masked-${peerId}`);
+      const codeBlock = card.querySelector(".conf-code-block");
       const codeElem = document.getElementById(`conf-code-${peerId}`);
 
-      if (!revealBtn || !previewWrapper || !codeElem) {
+      if (!revealBtn || !codeBlock || !codeElem) {
         return;
       }
 
       async function fetchConfiguration() {
-        if (confCache.has(peerId)) {
-          return confCache.get(peerId);
-        }
+        const resp = await fetch(`/peers/${encodeURIComponent(peerId)}/conf`, {
+          headers: { Accept: "text/plain" },
+          cache: "no-store",
+        });
 
-        revealBtn.disabled = true;
-        revealBtn.textContent = "Loading...";
-
-        try {
-          const resp = await fetch(`/peers/${encodeURIComponent(peerId)}/conf`, {
-            headers: { Accept: "text/plain" },
-            cache: "no-store",
-          });
-
-          if (!resp.ok) {
-            if (resp.status === 401) {
-              throw new Error("Authentication required. Please refresh and log in.");
-            }
-            throw new Error(`Failed to load configuration (HTTP ${resp.status}).`);
+        if (!resp.ok) {
+          if (resp.status === 401) {
+            throw new Error("Authentication required. Please refresh and log in.");
           }
-
-          const text = await resp.text();
-          confCache.set(peerId, text);
-          return text;
-        } finally {
-          revealBtn.disabled = false;
+          throw new Error(`Failed to load configuration (HTTP ${resp.status}).`);
         }
+
+        const text = await resp.text();
+        if (!validateWireguardConf(text)) {
+          throw new Error("Configuration failed validation: missing [Interface].");
+        }
+        return text;
       }
 
       revealBtn.addEventListener("click", async () => {
         const isExpanded = revealBtn.getAttribute("aria-expanded") === "true";
 
         if (isExpanded) {
-          // Hide configuration
-          previewWrapper.classList.add("hidden");
+          // Revert to masked preview placeholder and purge secret from DOM
+          codeElem.textContent = "";
+          codeBlock.classList.add("hidden");
+          if (maskedElem) maskedElem.classList.remove("hidden");
           revealBtn.setAttribute("aria-expanded", "false");
           revealBtn.textContent = "Reveal Configuration";
         } else {
-          // Show configuration
+          // Fetch strictly on-demand, validate, and reveal
+          revealBtn.disabled = true;
+          revealBtn.textContent = "Loading...";
+
           try {
             const confText = await fetchConfiguration();
             codeElem.textContent = confText;
-            previewWrapper.classList.remove("hidden");
+            if (maskedElem) maskedElem.classList.add("hidden");
+            codeBlock.classList.remove("hidden");
             revealBtn.setAttribute("aria-expanded", "true");
             revealBtn.textContent = "Hide Configuration";
-
-            if (copyBtn) {
-              copyBtn.disabled = false;
-              copyBtn.title = "Copy configuration to clipboard";
-            }
           } catch (err) {
             codeElem.textContent = err instanceof Error ? err.message : "Error retrieving configuration.";
-            previewWrapper.classList.remove("hidden");
+            if (maskedElem) maskedElem.classList.add("hidden");
+            codeBlock.classList.remove("hidden");
             revealBtn.setAttribute("aria-expanded", "true");
             revealBtn.textContent = "Hide Error";
+          } finally {
+            revealBtn.disabled = false;
           }
         }
       });
 
       if (copyBtn) {
         copyBtn.addEventListener("click", async () => {
-          let textToCopy = confCache.get(peerId);
+          let textToCopy = codeElem.textContent;
 
-          if (!textToCopy) {
+          if (!textToCopy || !validateWireguardConf(textToCopy)) {
+            // One-click copy on-demand fetch
+            const origCopyText = copyBtn.textContent;
+            copyBtn.disabled = true;
+            copyBtn.textContent = "Loading...";
             try {
               textToCopy = await fetchConfiguration();
-              codeElem.textContent = textToCopy;
-              previewWrapper.classList.remove("hidden");
-              revealBtn.setAttribute("aria-expanded", "true");
-              revealBtn.textContent = "Hide Configuration";
-              copyBtn.disabled = false;
-            } catch (err) {
+            } catch {
+              copyBtn.textContent = "Copy Failed";
+              setTimeout(() => {
+                copyBtn.textContent = origCopyText;
+                copyBtn.disabled = false;
+              }, 2000);
               return;
+            } finally {
+              copyBtn.disabled = false;
             }
           }
 

@@ -390,6 +390,17 @@ footer {
   font-size: 0.875rem;
 }
 
+.conf-masked-placeholder {
+  padding: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+  background-color: #0b0f19;
+  letter-spacing: 0.15em;
+  user-select: none;
+}
+
 .conf-code-block {
   padding: 0.75rem;
   max-height: 220px;

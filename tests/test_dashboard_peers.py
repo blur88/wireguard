@@ -444,6 +444,8 @@ def test_dashboard_template_renders_search_and_masked_actions_no_leak(
 
     # 3. Masked preview structure and security warning
     assert "Sensitive Configuration" in html or "warning" in html.lower()
+    assert "conf-masked-placeholder" in html
+    assert "••••" in html
     assert 'class="btn-action btn-reveal"' in html or "btn-reveal" in html
     assert "btn-copy" in html
     assert "btn-download" in html or "download" in html

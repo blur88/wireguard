@@ -51,7 +51,7 @@ def test_static_dashboard_script_served_locally(client: TestClient) -> None:
     assert response.status_code == 200
     assert "javascript" in response.headers["content-type"]
     assert "initSearchFilter" in response.text
-    assert "confCache" in response.text
+    assert "validateWireguardConf" in response.text
 
 
 def test_missing_static_dir_fails_fast_at_initialization(

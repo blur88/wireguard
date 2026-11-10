@@ -109,8 +109,7 @@
             type="button"
             class="btn-action btn-copy"
             data-peer-id="{{ item.meta.peer_id }}"
-            disabled
-            title="Reveal configuration first to copy"
+            title="Copy configuration to clipboard"
           >
             Copy
           </button>
@@ -124,7 +123,7 @@
           </a>
         </div>
         <div
-          class="conf-preview-wrapper hidden"
+          class="conf-preview-wrapper"
           id="conf-wrapper-{{ item.meta.peer_id }}"
           role="region"
           aria-label="Configuration for {{ item.meta.friendly_name }}"
@@ -133,7 +132,10 @@
             <span class="warning-icon" aria-hidden="true">⚠️</span>
             <span class="warning-text">Sensitive Configuration: Contains private key. Do not share or expose.</span>
           </div>
-          <pre class="conf-code-block"><code id="conf-code-{{ item.meta.peer_id }}" class="conf-code"></code></pre>
+          <div class="conf-masked-placeholder" id="conf-masked-{{ item.meta.peer_id }}" aria-hidden="true">
+            ••••••••••••••••••••••••••••••••••••••••<br>••••••••••••••••••••••••••••••••••••••••<br>••••••••••••••••••••••••••••••••••••••••
+          </div>
+          <pre class="conf-code-block hidden"><code id="conf-code-{{ item.meta.peer_id }}" class="conf-code"></code></pre>
         </div>
       </div>
       {% endfor %}

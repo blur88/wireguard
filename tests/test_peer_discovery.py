@@ -116,10 +116,10 @@ def test_get_peer_conf_toctou_symlink_replacement_race(
 
     backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
 
-    # Simulate race: right after os.open on base_dir, replace peer1 dir with symlink to secret_dir
+    # 1. Directory symlink replacement race
     orig_open = os.open
 
-    def race_open(
+    def race_open_dir(
         path: os.PathLike[str] | str | bytes,
         flags: int,
         mode: int = 0o777,
@@ -133,8 +133,39 @@ def test_get_peer_conf_toctou_symlink_replacement_race(
             peer_dir.symlink_to(secret_dir)
         return orig_open(path, flags, mode, dir_fd=dir_fd)
 
-    monkeypatch.setattr(os, "open", race_open)
+    monkeypatch.setattr(os, "open", race_open_dir)
+    assert backend.get_peer_conf("peer1") is None
 
+
+def test_get_peer_conf_toctou_conf_file_symlink_replacement_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    peer_dir = tmp_path / "peer1"
+    peer_dir.mkdir()
+    real_conf = peer_dir / "peer1.conf"
+    real_conf.write_text("[Interface]\nAddress = 10.0.0.1\n")
+
+    secret_file = tmp_path / "secret_file.conf"
+    secret_file.write_text("[Interface]\nPrivateKey = FILE_EXPLOIT\n")
+
+    backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
+
+    orig_open = os.open
+
+    def race_open_file(
+        path: os.PathLike[str] | str | bytes,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == "peer1.conf" and (flags & os.O_NOFOLLOW):
+            # Dynamic race replacement before opening candidate peer conf file
+            real_conf.unlink()
+            real_conf.symlink_to(secret_file)
+        return orig_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", race_open_file)
     assert backend.get_peer_conf("peer1") is None
 
 
