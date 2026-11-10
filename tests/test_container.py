@@ -161,6 +161,28 @@ def test_container_custom_port(docker_image: str) -> None:
             assert _is_valid_healthz_response(resp.read())
 
 
+def _wait_for_container_exit(container_name: str, timeout: float = 10.0) -> tuple[str, str]:
+    """Poll Docker inspect until container exits, returning (running, exit_code)."""
+    start = time.monotonic()
+    last_running = "true"
+    last_exit_code = "0"
+    while time.monotonic() - start < timeout:
+        inspect_res = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", container_name],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        parts = inspect_res.stdout.strip().split()
+        if len(parts) == 2:
+            last_running, last_exit_code = parts
+            if last_running == "false":
+                return last_running, last_exit_code
+        time.sleep(0.1)
+
+    return last_running, last_exit_code
+
+
 def test_container_invalid_port_fails_safely(docker_image: str) -> None:
     container_suffix = uuid.uuid4().hex[:8]
     container_name = f"wg-test-invalid-{container_suffix}"
@@ -179,15 +201,10 @@ def test_container_invalid_port_fails_safely(docker_image: str) -> None:
     subprocess.run(run_cmd, check=True, capture_output=True)
 
     try:
-        time.sleep(2)
-        inspect_res = subprocess.run(
-            ["docker", "inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", container_name],
-            capture_output=True,
-            text=True,
-            check=True,
+        running, exit_code = _wait_for_container_exit(container_name)
+        assert running == "false", (
+            f"Container {container_name} failed to exit with invalid PORT (exit_code={exit_code})"
         )
-        running, exit_code = inspect_res.stdout.strip().split()
-        assert running == "false", "Container should not continue running with invalid PORT"
         assert exit_code != "0", f"Container exit code should be non-zero, got {exit_code}"
 
         logs = subprocess.run(["docker", "logs", container_name], capture_output=True, text=True)
@@ -218,15 +235,10 @@ def test_container_missing_credentials_fails_safely(docker_image: str) -> None:
     subprocess.run(run_cmd, check=True, capture_output=True)
 
     try:
-        time.sleep(2)
-        inspect_res = subprocess.run(
-            ["docker", "inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", container_name],
-            capture_output=True,
-            text=True,
-            check=True,
+        running, exit_code = _wait_for_container_exit(container_name)
+        assert running == "false", (
+            f"Container {container_name} failed to exit without credentials (exit_code={exit_code})"
         )
-        running, exit_code = inspect_res.stdout.strip().split()
-        assert running == "false", "Container should exit when credentials are missing"
         assert exit_code != "0", f"Exit code should be non-zero, got {exit_code}"
 
         logs = subprocess.run(["docker", "logs", container_name], capture_output=True, text=True)

@@ -43,6 +43,20 @@ def _get_free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def select_cdp_page_target(targets: list[dict[str, Any]]) -> str | None:
+    """Select the first normal browser page target, rejecting non-page and extension targets."""
+    for target in targets:
+        if target.get("type") != "page":
+            continue
+        url = str(target.get("url", ""))
+        if url.startswith("chrome-extension://") or url.startswith("chrome-devtools://"):
+            continue
+        ws_url = target.get("webSocketDebuggerUrl")
+        if ws_url and isinstance(ws_url, str):
+            return ws_url
+    return None
+
+
 class CDPClient:
     """Minimal async Chrome DevTools Protocol client over WebSockets."""
 
@@ -256,15 +270,13 @@ async def run_test_server_and_browser(
 
     cdp_client: CDPClient | None = None
     try:
-        # Wait for Chrome CDP endpoint
+        # Wait for Chrome CDP endpoint with a valid page target
         ws_url: str | None = None
         for _ in range(300):
             if chrome_proc.poll() is not None:
-                err_output = (
-                    chrome_proc.stderr.read().decode("utf-8", errors="replace")
-                    if chrome_proc.stderr
-                    else ""
-                )
+                err_output = ""
+                if chrome_proc.stderr:
+                    err_output = chrome_proc.stderr.read().decode("utf-8", errors="replace")
                 raise RuntimeError(
                     f"Chrome process exited unexpectedly with code "
                     f"{chrome_proc.returncode}: {err_output}"
@@ -272,31 +284,34 @@ async def run_test_server_and_browser(
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/list") as resp:
                     pages = json.loads(resp.read().decode())
-                    page_targets = [p for p in pages if p.get("type") == "page"]
-                    if page_targets:
-                        ws_url = page_targets[0].get("webSocketDebuggerUrl")
-                        if ws_url:
-                            break
-                    elif pages:
-                        for p in pages:
-                            url = p.get("url", "")
-                            if not url.startswith("chrome-extension://"):
-                                ws_url = p.get("webSocketDebuggerUrl")
-                                if ws_url:
-                                    break
-                        if ws_url:
+                    if isinstance(pages, list):
+                        selected = select_cdp_page_target(pages)
+                        if selected:
+                            ws_url = selected
                             break
             except Exception:
                 pass
             await asyncio.sleep(0.05)
 
         if not ws_url:
-            err_output = (
-                chrome_proc.stderr.read().decode("utf-8", errors="replace")
-                if chrome_proc.stderr
-                else ""
+            # Terminate Chrome before reading stderr to avoid blocking on an open pipe
+            try:
+                os.killpg(os.getpgid(chrome_proc.pid), signal.SIGTERM)
+                chrome_proc.wait(timeout=1)
+            except Exception:
+                try:
+                    os.killpg(os.getpgid(chrome_proc.pid), signal.SIGKILL)
+                except Exception:
+                    pass
+            err_output = ""
+            if chrome_proc.stderr:
+                try:
+                    err_output = chrome_proc.stderr.read().decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+            raise RuntimeError(
+                f"Chrome CDP page target did not become available on port {cdp_port}. {err_output}"
             )
-            raise RuntimeError(f"Chrome CDP endpoint did not become available: {err_output}")
 
         cdp_client = CDPClient(ws_url)
         await cdp_client.connect()
@@ -632,3 +647,47 @@ def test_browser_download_link_attributes(tmp_path: Path) -> None:
             assert browser.csp_violations == [], err_msg
 
     asyncio.run(_run())
+
+
+def test_select_cdp_page_target_filters_extensions_and_non_page_targets() -> None:
+    targets: list[dict[str, Any]] = [
+        {
+            "type": "background_page",
+            "url": "chrome-extension://nkeimhogjdpnpccoofpliimaahmaaome/background.html",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/ext1",
+        },
+        {
+            "type": "page",
+            "url": "chrome-extension://other/options.html",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/ext2",
+        },
+        {
+            "type": "service_worker",
+            "url": "https://example.com/sw.js",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/sw",
+        },
+        {
+            "type": "page",
+            "url": "about:blank",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/valid",
+        },
+    ]
+
+    selected = select_cdp_page_target(targets)
+    assert selected == "ws://127.0.0.1:9222/devtools/page/valid"
+
+
+def test_select_cdp_page_target_returns_none_when_no_valid_page_target() -> None:
+    assert select_cdp_page_target([]) is None
+    assert (
+        select_cdp_page_target(
+            [
+                {
+                    "type": "background_page",
+                    "url": "chrome-extension://ext/bg.html",
+                    "webSocketDebuggerUrl": "ws://127.0.0.1:9222/ext",
+                }
+            ]
+        )
+        is None
+    )

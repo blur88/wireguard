@@ -25,7 +25,7 @@ def test_ci_workflow_exists_and_is_valid_yaml(workflow_yaml: dict[str, Any]) -> 
 
 
 def test_ci_workflow_triggers_on_push_and_pr_to_main(workflow_yaml: dict[str, Any]) -> None:
-    """Ensure workflow triggers on push to main and pull_request to main."""
+    """Ensure workflow triggers on push to main, pull_request to main, and manual dispatch."""
     triggers = workflow_yaml.get("on")
     assert triggers is not None, "Workflow must define triggers ('on')"
 
@@ -34,6 +34,8 @@ def test_ci_workflow_triggers_on_push_and_pr_to_main(workflow_yaml: dict[str, An
 
     assert "pull_request" in triggers, "Workflow must trigger on 'pull_request'"
     assert "main" in triggers["pull_request"]["branches"]
+
+    assert "workflow_dispatch" in triggers, "Workflow must support 'workflow_dispatch'"
 
 
 def test_ci_workflow_executes_check_runner_or_guardrails() -> None:
