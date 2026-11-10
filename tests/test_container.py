@@ -77,9 +77,16 @@ def running_container(
     ]
     if read_only:
         cmd.extend(["--read-only", "--tmpfs", "/tmp", "--security-opt", "no-new-privileges:true"])
+
+    container_env = {
+        "DASHBOARD_PASSWORD": "test-container-password-123",
+        "SESSION_SECRET": "c" * 32,
+    }
     if env:
-        for k, v in env.items():
-            cmd.extend(["-e", f"{k}={v}"])
+        container_env.update(env)
+
+    for k, v in container_env.items():
+        cmd.extend(["-e", f"{k}={v}"])
     cmd.append(image)
 
     subprocess.run(cmd, check=True, capture_output=True)
@@ -189,6 +196,45 @@ def test_container_invalid_port_fails_safely(docker_image: str) -> None:
             or "Invalid PORT" in logs.stderr
             or "Configuration error" in logs.stdout
             or "Invalid PORT" in logs.stdout
+        )
+
+    finally:
+        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
+
+
+def test_container_missing_credentials_fails_safely(docker_image: str) -> None:
+    container_suffix = uuid.uuid4().hex[:8]
+    container_name = f"wg-test-missing-creds-{container_suffix}"
+
+    run_cmd = [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        container_name,
+        docker_image,
+    ]
+
+    subprocess.run(run_cmd, check=True, capture_output=True)
+
+    try:
+        time.sleep(2)
+        inspect_res = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", container_name],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        running, exit_code = inspect_res.stdout.strip().split()
+        assert running == "false", "Container should exit when credentials are missing"
+        assert exit_code != "0", f"Exit code should be non-zero, got {exit_code}"
+
+        logs = subprocess.run(["docker", "logs", container_name], capture_output=True, text=True)
+        assert (
+            "Configuration error" in logs.stderr
+            or "DASHBOARD_PASSWORD" in logs.stderr
+            or "Configuration error" in logs.stdout
+            or "DASHBOARD_PASSWORD" in logs.stdout
         )
 
     finally:
