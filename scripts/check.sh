@@ -5,6 +5,7 @@ set -euo pipefail
 # Supports:
 #   ./scripts/check.sh         - Linting, formatting check, strict typechecking, fast test suite
 #   ./scripts/check.sh --full  - Complete verification including Docker container integration tests
+#   ./scripts/check.sh --fix   - Run Ruff auto-fix and formatting prior to fast verification
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
@@ -15,15 +16,31 @@ if [[ -d ".venv/bin" ]]; then
 fi
 
 MODE="fast"
+DO_FIX=false
 
 if [[ $# -eq 0 ]]; then
     MODE="fast"
 elif [[ $# -eq 1 && "$1" == "--full" ]]; then
     MODE="full"
+elif [[ $# -eq 1 && "$1" == "--fix" ]]; then
+    MODE="fast"
+    DO_FIX=true
 else
     echo "Error: Unsupported argument(s): $*" >&2
-    echo "Usage: $0 [--full]" >&2
+    echo "Usage: $0 [--full | --fix]" >&2
     exit 2
+fi
+
+if [[ "${DO_FIX}" == "true" ]]; then
+    echo "=================================================="
+    echo "Applying Ruff fixes: ruff check --fix"
+    echo "=================================================="
+    ruff check --fix .
+
+    echo "=================================================="
+    echo "Applying Ruff formatting: ruff format"
+    echo "=================================================="
+    ruff format .
 fi
 
 echo "=================================================="

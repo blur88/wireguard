@@ -18,4 +18,4 @@ Five-category finding classification (`blocking`, `non-blocking`, `accepted`, `d
 
 ### Verification
 
-Run `./scripts/check.sh` for fast local verification (lint, format, strict typechecking, fast unit/HTTP tests). Run `./scripts/check.sh --full` for complete verification (includes Docker container integration tests). Complete verification (`--full`) is required before PR creation and merge; fast verification must not be represented as full verification.
+Run `./scripts/check.sh` for fast local verification (lint, format, strict typechecking, fast unit/HTTP tests). Run `./scripts/check.sh --fix` to apply Ruff auto-fixes and formatting before fast verification. Run `./scripts/check.sh --full` for complete verification (includes Docker container integration tests). Complete verification (`--full`) is required before PR creation and merge; fast verification must not be represented as full verification.
