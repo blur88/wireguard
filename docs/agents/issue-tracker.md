@@ -12,7 +12,11 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Count open blockers**: `gh api repos/<owner>/<repo>/issues/<n> --jq .issue_dependencies_summary.blocked_by` (open blockers only; 0 means startable). `gh issue view <n> --json blockedBy` also lists closed blockers, so filter it: `--jq '[.blockedBy.nodes[] | select(.state == "OPEN")] | length'`.
 - **Comment**: `gh issue comment <number> --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
-- **Close**: post the explanation with `gh issue comment <number> --body "..."`, then `gh issue close <number>`. On an already-closed issue, `gh issue close --comment` drops the comment and still exits 0.
+- **Close**: post the explanation with `gh issue comment <number> --body "..."`, then `gh issue close <number>`. On an already-closed issue, `gh issue close --comment` drops the comment and still exits 0. For implementation deliveries, see **Direct-to-trunk delivery protocol** below before closing.
+
+Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
+
+File issues only into the user's own repo. Never file into `mattpocock/skills` (the repo these skills come from) unless the user owns it. In a fork, `gh` can default to the upstream parent, so before the first `gh issue create` of a session, check the target with `gh repo view --json nameWithOwner` and confirm it with the user if it is not their repo.
 
 ## GitHub Actions CI verification
 
@@ -29,9 +33,68 @@ When verifying GitHub Actions runs from automated agent sessions:
   ```
 - If the run fails or cannot be found, report the status accurately with logs (`gh run view "$RUN_ID" --log-failed`).
 
-Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
+## Direct-to-trunk delivery protocol
 
-File issues only into the user's own repo. Never file into `mattpocock/skills` (the repo these skills come from) unless the user owns it. In a fork, `gh` can default to the upstream parent, so before the first `gh issue create` of a session, check the target with `gh repo view --json nameWithOwner` and confirm it with the user if it is not their repo.
+When delivering changes directly to `main` (trunk) rather than via pull request, agents must strictly follow the operational lifecycle boundaries below. Direct delivery does not replace or bypass pull requests where repository policy or branch protection rules require them.
+
+### 1. Lifecycle boundaries
+
+Never conflate the three discrete operational phases:
+1. **Implementation completion**: Code is implemented, unit/slice tests pass, and fast local verification passes (`./scripts/check.sh`). The working tree is clean. This phase does *not* constitute review approval or verified delivery.
+2. **Review approval**: A formal two-axis review (`/code-review` covering Standards and Spec) is completed, all blocking findings are resolved, and the review is signed off. Local verification and review approval are mandatory prerequisites before any push attempt.
+3. **Verified remote delivery**: Complete verification passes (`./scripts/check.sh --full` per `AGENTS.md`), the local commit is pushed to the authorized remote branch, verified on remote `main`, and associated CI workflows pass non-interactively to completion.
+
+### 2. Pre-push gates
+
+Before pushing directly to trunk, agents must verify each of the following gates:
+- **Local verification passed**: Run `./scripts/check.sh --full` (complete verification per `AGENTS.md`) and ensure zero failures. (During red-green iteration, fast verification `./scripts/check.sh` is used, but delivery to trunk requires full verification).
+- **Review approved**: Confirm `/code-review` completed with no unresolved blocking findings.
+- **Repository policy & authorization**: Push only when permitted by repository policy and explicitly authorized by the user. If branch protection or repository policy requires pull requests, preserve the PR workflow and do not attempt to bypass branch protection or required reviews.
+- **Clean working tree**: Verify `git status` has no unstaged or uncommitted changes.
+- **Target branch match**: Verify current branch is the authorized target branch:
+  ```bash
+  git branch --show-current  # Must output 'main' (or authorized target branch)
+  ```
+- **Commit identity verification**: Verify the commit to be delivered:
+  ```bash
+  git log -1 --stat
+  COMMIT_SHA=$(git rev-parse HEAD)
+  ```
+
+### 3. Delivery and remote verification
+
+Execute the delivery and verify remote persistence:
+- **Push to remote**:
+  ```bash
+  git push origin main
+  ```
+- **Verify remote existence**: Confirm the remote branch incorporates the expected commit:
+  ```bash
+  git fetch origin main
+  git rev-parse origin/main  # Must equal $COMMIT_SHA
+  ```
+
+### 4. Non-interactive CI monitoring
+
+Monitor remote CI execution to completion following the protocol in **GitHub Actions CI verification** above, scoped to the trunk delivery:
+```bash
+RUN_ID=$(gh run list --branch main --workflow "ci.yml" --limit 1 --json databaseId --jq '.[0].databaseId')
+[ -n "$RUN_ID" ] && gh run watch "$RUN_ID" --exit-status
+```
+If CI fails, inspect logs (`gh run view "$RUN_ID" --log-failed`) and do not proceed to issue closure.
+
+### 5. Verified issue closure
+
+Only after remote verification and CI completion succeed:
+- Post the closing comment referencing the verified commit SHA:
+  ```bash
+  gh issue comment <number> --body "Delivered in commit $COMMIT_SHA with CI verification passing."
+  ```
+- Close the issue:
+  ```bash
+  gh issue close <number>
+  ```
+- Never close an issue at implementation completion or review approval; closure requires verified remote delivery.
 
 ## Code Scanning Alerts
 
