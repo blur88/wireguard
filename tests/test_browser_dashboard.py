@@ -98,10 +98,89 @@ class CDPClient:
             "Runtime.evaluate",
             {"expression": expression, "returnByValue": True, "awaitPromise": True},
         )
+        if "error" in res:
+            raise RuntimeError(f"CDP evaluation error: {res['error']}")
         result_payload = res.get("result", {})
         if "exceptionDetails" in result_payload:
             raise RuntimeError(f"JS evaluation error: {result_payload['exceptionDetails']}")
         return result_payload.get("result", {}).get("value")
+
+    async def wait_for_condition(
+        self,
+        expression: str,
+        timeout: float = 10.0,
+        interval: float = 0.05,
+        description: str = "condition",
+    ) -> Any:
+        start = time.monotonic()
+        last_error = None
+        while time.monotonic() - start < timeout:
+            try:
+                val = await self.evaluate(expression)
+                if val:
+                    return val
+            except Exception as e:
+                last_error = e
+            await asyncio.sleep(interval)
+        raise TimeoutError(
+            f"Timed out waiting for {description} after {timeout}s (last error: {last_error})"
+        )
+
+    async def wait_for_selector(
+        self,
+        selector: str,
+        timeout: float = 10.0,
+        interval: float = 0.05,
+    ) -> None:
+        expr = f"Boolean(document.querySelector({json.dumps(selector)}))"
+        await self.wait_for_condition(
+            expr,
+            timeout=timeout,
+            interval=interval,
+            description=f"selector '{selector}'",
+        )
+
+    async def navigate_and_wait(
+        self,
+        url: str,
+        expected_path: str,
+        ready_selector: str,
+        timeout: float = 10.0,
+    ) -> None:
+        await self.send("Page.navigate", {"url": url})
+        start = time.monotonic()
+        while time.monotonic() - start < timeout:
+            try:
+                href = await self.evaluate("window.location.href")
+                if href and href.startswith("chrome-error://"):
+                    raise RuntimeError(f"Browser navigation error encountered: {href}")
+                pathname = await self.evaluate("window.location.pathname")
+                ready_state = await self.evaluate("document.readyState")
+                if pathname == expected_path and ready_state in ("interactive", "complete"):
+                    exists = await self.evaluate(
+                        f"Boolean(document.querySelector({json.dumps(ready_selector)}))"
+                    )
+                    if exists:
+                        return
+            except Exception as e:
+                if "Browser navigation error" in str(e):
+                    raise
+            await asyncio.sleep(0.05)
+
+        try:
+            cur_href = await self.evaluate("window.location.href")
+            cur_path = await self.evaluate("window.location.pathname")
+            cur_state = await self.evaluate("document.readyState")
+            title = await self.evaluate("document.title")
+        except Exception:
+            cur_href = cur_path = cur_state = title = "unknown"
+
+        raise TimeoutError(
+            f"Timed out after {timeout}s navigating to {url} "
+            f"(expected path '{expected_path}', selector '{ready_selector}'). "
+            f"Current state: href='{cur_href}', pathname='{cur_path}', "
+            f"readyState='{cur_state}', title='{title}'"
+        )
 
 
 @asynccontextmanager
@@ -133,7 +212,7 @@ async def run_test_server_and_browser(
     server_thread.start()
 
     # Wait for server to bind
-    for _ in range(50):
+    for _ in range(100):
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{server_port}/healthz") as r:
                 if r.status == 200:
@@ -168,7 +247,7 @@ async def run_test_server_and_browser(
     try:
         # Wait for Chrome CDP endpoint
         ws_url: str | None = None
-        for _ in range(60):
+        for _ in range(100):
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/list") as resp:
                     pages = json.loads(resp.read().decode())
@@ -184,23 +263,75 @@ async def run_test_server_and_browser(
         cdp_client = CDPClient(ws_url)
         await cdp_client.connect()
 
-        # Log in through the standard login page in the browser
         base_url = f"http://127.0.0.1:{server_port}"
-        await cdp_client.send("Page.navigate", {"url": f"{base_url}/login"})
-        await asyncio.sleep(0.3)
+
+        # 1. Navigate to login and wait deterministically for the form and password field
+        await cdp_client.navigate_and_wait(
+            url=f"{base_url}/login",
+            expected_path="/login",
+            ready_selector="#password",
+            timeout=10.0,
+        )
+
+        # 2. Verify CSRF token is present on the form
+        csrf_present = await cdp_client.evaluate(
+            "Boolean(document.querySelector('.login-card form input[name=\"csrf_token\"]')?.value)"
+        )
+        if not csrf_present:
+            raise RuntimeError("Login page loaded without required CSRF token")
+
+        # 3. Enter password and submit the form
         await cdp_client.evaluate(f"""
             (() => {{
-                document.getElementById('password').value = '{password}';
+                const pwInput = document.getElementById('password');
+                pwInput.value = '{password}';
+                pwInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 document.querySelector('.login-card form').submit();
             }})()
         """)
 
-        # Wait for redirect to complete
-        for _ in range(40):
-            cur = await cdp_client.evaluate("window.location.pathname")
-            if cur == "/":
-                break
+        # 4. Wait for login completion, redirect to /, and dashboard readiness
+        start = time.monotonic()
+        login_timeout = 10.0
+        while time.monotonic() - start < login_timeout:
+            try:
+                href = await cdp_client.evaluate("window.location.href")
+                if href and href.startswith("chrome-error://"):
+                    raise RuntimeError(f"Browser navigation error after login: {href}")
+
+                pathname = await cdp_client.evaluate("window.location.pathname")
+                if pathname == "/login":
+                    err = await cdp_client.evaluate(
+                        "document.querySelector('.alert-error')?.textContent"
+                    )
+                    if err:
+                        raise RuntimeError(f"Login rejected by server: {err.strip()}")
+                elif pathname == "/":
+                    ready_state = await cdp_client.evaluate("document.readyState")
+                    if ready_state in ("interactive", "complete"):
+                        has_logout = await cdp_client.evaluate(
+                            "Boolean(document.querySelector('.btn-logout'))"
+                        )
+                        has_dashboard_content = await cdp_client.evaluate(
+                            "Boolean(document.querySelector('#peer-search, .empty-state'))"
+                        )
+                        if has_logout and has_dashboard_content:
+                            break
+            except Exception as e:
+                if any(k in str(e) for k in ("rejected by server", "Browser navigation error")):
+                    raise
             await asyncio.sleep(0.05)
+        else:
+            try:
+                cur_path = await cdp_client.evaluate("window.location.pathname")
+                cur_state = await cdp_client.evaluate("document.readyState")
+                title = await cdp_client.evaluate("document.title")
+            except Exception:
+                cur_path = cur_state = title = "unknown"
+            raise TimeoutError(
+                f"Timed out after {login_timeout}s waiting for dashboard readiness after login. "
+                f"Current pathname: '{cur_path}', readyState: '{cur_state}', title: '{title}'"
+            )
 
         yield cdp_client, base_url
     finally:
@@ -229,19 +360,23 @@ def test_browser_search_filter_without_network_requests(tmp_path: Path) -> None:
             "[Interface]\nAddress = 10.13.13.99/32\nPrivateKey = KEY_LAPTOP==\n"
         )
 
-        async with run_test_server_and_browser(tmp_path) as (browser, base_url):
-            # Navigate to dashboard
-            await browser.send("Page.navigate", {"url": f"{base_url}/"})
-            await asyncio.sleep(0.5)
+        async with run_test_server_and_browser(tmp_path) as (browser, _):
+            # Wait for peer elements to be rendered in the DOM
+            sel_p1 = '[data-peer-id="peer1"]'
+            sel_lap = '[data-peer-id="peer_laptop"]'
+            await browser.wait_for_selector(sel_p1)
+            await browser.wait_for_selector(sel_lap)
 
             # Confirm CSP compliance on page load
             assert browser.csp_violations == [], f"CSP violations found: {browser.csp_violations}"
 
             # Confirm both peers initially visible
-            sel_p1 = "document.querySelector('[data-peer-id=\"peer1\"]')"
-            sel_lap = "document.querySelector('[data-peer-id=\"peer_laptop\"]')"
-            peer1_vis = await browser.evaluate(f"!{sel_p1}.classList.contains('card-hidden')")
-            lap_vis = await browser.evaluate(f"!{sel_lap}.classList.contains('card-hidden')")
+            peer1_vis = await browser.evaluate(
+                f"!document.querySelector('{sel_p1}').classList.contains('card-hidden')"
+            )
+            lap_vis = await browser.evaluate(
+                f"!document.querySelector('{sel_lap}').classList.contains('card-hidden')"
+            )
             assert peer1_vis is True
             assert lap_vis is True
 
@@ -256,13 +391,14 @@ def test_browser_search_filter_without_network_requests(tmp_path: Path) -> None:
                     input.dispatchEvent(new Event('input'));
                 })()
             """)
-            await asyncio.sleep(0.1)
 
-            # Assert peer_laptop is visible and peer1 is hidden
-            peer1_hidden = await browser.evaluate(f"{sel_p1}.classList.contains('card-hidden')")
-            lap_shown = await browser.evaluate(f"!{sel_lap}.classList.contains('card-hidden')")
-            assert peer1_hidden is True
-            assert lap_shown is True
+            # Wait for search filtering to update visibility
+            await browser.wait_for_condition(
+                f"document.querySelector('{sel_p1}').classList.contains('card-hidden') && "
+                f"!document.querySelector('{sel_lap}').classList.contains('card-hidden')",
+                timeout=5.0,
+                description="peer1 hidden and peer_laptop visible after search 'laptop'",
+            )
 
             # Search by IP "10.13.13.2"
             await browser.evaluate("""
@@ -272,12 +408,13 @@ def test_browser_search_filter_without_network_requests(tmp_path: Path) -> None:
                     input.dispatchEvent(new Event('input'));
                 })()
             """)
-            await asyncio.sleep(0.1)
 
-            peer1_shown = await browser.evaluate(f"!{sel_p1}.classList.contains('card-hidden')")
-            lap_hidden = await browser.evaluate(f"{sel_lap}.classList.contains('card-hidden')")
-            assert peer1_shown is True
-            assert lap_hidden is True
+            await browser.wait_for_condition(
+                f"!document.querySelector('{sel_p1}').classList.contains('card-hidden') && "
+                f"document.querySelector('{sel_lap}').classList.contains('card-hidden')",
+                timeout=5.0,
+                description="peer1 visible and peer_laptop hidden after search '10.13.13.2'",
+            )
 
             # STRICT VERIFICATION: Absolutely NO network requests triggered by search
             reqs = browser.network_requests
@@ -298,9 +435,8 @@ def test_browser_reveal_configuration_explicit_action_and_safe_rendering(tmp_pat
         )
         (p1 / "peer1.conf").write_text(conf_body)
 
-        async with run_test_server_and_browser(tmp_path) as (browser, base_url):
-            await browser.send("Page.navigate", {"url": f"{base_url}/"})
-            await asyncio.sleep(0.5)
+        async with run_test_server_and_browser(tmp_path) as (browser, _):
+            await browser.wait_for_selector('[data-peer-id="peer1"]')
 
             # 1. Before reveal: masked preview is shown, code element is empty and hidden
             masked_vis_before = await browser.evaluate(
@@ -325,14 +461,12 @@ def test_browser_reveal_configuration_explicit_action_and_safe_rendering(tmp_pat
                 document.querySelector('[data-peer-id="peer1"] .btn-reveal').click();
             """)
 
-            # Wait for on-demand fetch
-            for _ in range(30):
-                code_text = await browser.evaluate(
-                    "document.getElementById('conf-code-peer1').textContent"
-                )
-                if "TOP_SECRET_PRIVATE_KEY_4444=" in code_text:
-                    break
-                await asyncio.sleep(0.05)
+            # Wait for on-demand fetch and rendering
+            await browser.wait_for_condition(
+                "document.getElementById('conf-code-peer1').textContent.includes('TOP_SECRET_PRIVATE_KEY_4444=')",
+                timeout=5.0,
+                description="revealed configuration content",
+            )
 
             # Verify network request occurred strictly on demand to /peers/peer1/conf
             conf_requests = [req for req in browser.network_requests if "/peers/peer1/conf" in req]
@@ -354,18 +488,14 @@ def test_browser_reveal_configuration_explicit_action_and_safe_rendering(tmp_pat
             await browser.evaluate("""
                 document.querySelector('[data-peer-id="peer1"] .btn-reveal').click();
             """)
-            await asyncio.sleep(0.1)
 
-            # Assert sensitive text was purged from DOM upon hiding
-            code_text_purged = await browser.evaluate(
-                "document.getElementById('conf-code-peer1').textContent"
+            # Wait for text purge and masked view restoration
+            await browser.wait_for_condition(
+                "document.getElementById('conf-code-peer1').textContent === '' && "
+                "!document.getElementById('conf-masked-peer1').classList.contains('hidden')",
+                timeout=5.0,
+                description="purged secret text and restored masked preview",
             )
-            assert code_text_purged == ""
-
-            masked_restored = await browser.evaluate(
-                "!document.getElementById('conf-masked-peer1').classList.contains('hidden')"
-            )
-            assert masked_restored is True
 
             reveal_btn_revert = await browser.evaluate(
                 "document.querySelector('[data-peer-id=\"peer1\"] .btn-reveal').textContent.trim()"
@@ -383,9 +513,8 @@ def test_browser_clipboard_copy_success_and_failure_feedback(tmp_path: Path) -> 
             "[Interface]\nAddress = 10.13.13.2/32\nPrivateKey = COPY_SECRET==\n"
         )
 
-        async with run_test_server_and_browser(tmp_path) as (browser, base_url):
-            await browser.send("Page.navigate", {"url": f"{base_url}/"})
-            await asyncio.sleep(0.5)
+        async with run_test_server_and_browser(tmp_path) as (browser, _):
+            await browser.wait_for_selector('[data-peer-id="peer1"]')
 
             # 1. One-click copy directly from card without clicking Reveal first
             await browser.evaluate("""
@@ -395,11 +524,13 @@ def test_browser_clipboard_copy_success_and_failure_feedback(tmp_path: Path) -> 
                 };
                 document.querySelector('[data-peer-id="peer1"] .btn-copy').click();
             """)
-            for _ in range(30):
-                copied_text = await browser.evaluate("window.__copiedText")
-                if copied_text and "COPY_SECRET==" in copied_text:
-                    break
-                await asyncio.sleep(0.05)
+
+            await browser.wait_for_condition(
+                "Boolean(window.__copiedText && window.__copiedText.includes('COPY_SECRET=='))",
+                timeout=5.0,
+                description="clipboard text copied",
+            )
+            copied_text = await browser.evaluate("window.__copiedText")
 
             assert "COPY_SECRET==" in copied_text
             assert "[Interface]" in copied_text
@@ -417,7 +548,16 @@ def test_browser_clipboard_copy_success_and_failure_feedback(tmp_path: Path) -> 
                 document.execCommand = () => false;
                 document.querySelector('[data-peer-id="peer1"] .btn-copy').click();
             """)
-            await asyncio.sleep(0.1)
+
+            failed_expr = (
+                "document.querySelector('[data-peer-id=\"peer1\"] .btn-copy')"
+                ".textContent.includes('Failed')"
+            )
+            await browser.wait_for_condition(
+                failed_expr,
+                timeout=5.0,
+                description="failed copy button text",
+            )
 
             btn_failed_text = await browser.evaluate(
                 "document.querySelector('[data-peer-id=\"peer1\"] .btn-copy').textContent.trim()"
@@ -433,9 +573,8 @@ def test_browser_download_link_attributes(tmp_path: Path) -> None:
         p1.mkdir()
         (p1 / "peer1.conf").write_text("[Interface]\nAddress = 10.13.13.2/32\n")
 
-        async with run_test_server_and_browser(tmp_path) as (browser, base_url):
-            await browser.send("Page.navigate", {"url": f"{base_url}/"})
-            await asyncio.sleep(0.5)
+        async with run_test_server_and_browser(tmp_path) as (browser, _):
+            await browser.wait_for_selector('[data-peer-id="peer1"]')
 
             sel_dl = "document.querySelector('[data-peer-id=\"peer1\"] .btn-download')"
             download_href = await browser.evaluate(f"{sel_dl}.getAttribute('href')")
