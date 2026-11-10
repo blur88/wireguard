@@ -11,6 +11,7 @@ class Settings:
     auth_disabled: bool = False
     dashboard_password: str | None = None
     session_secret: str | None = None
+    cookie_secure: bool = True
 
 
 def _load_secret(
@@ -121,9 +122,26 @@ def get_settings() -> Settings:
                 "SESSION_SECRET or SESSION_SECRET_FILE is required when authentication is enabled."
             )
 
+    cookie_secure_val = os.environ.get("COOKIE_SECURE")
+    session_cookie_secure_val = os.environ.get("SESSION_COOKIE_SECURE")
+
+    if (
+        cookie_secure_val is not None
+        and session_cookie_secure_val is not None
+        and _parse_bool("COOKIE_SECURE") != _parse_bool("SESSION_COOKIE_SECURE")
+    ):
+        raise ValueError(
+            "Conflicting configuration: COOKIE_SECURE and SESSION_COOKIE_SECURE "
+            "have different values."
+        )
+
+    var_to_parse = "COOKIE_SECURE" if cookie_secure_val is not None else "SESSION_COOKIE_SECURE"
+    cookie_secure = _parse_bool(var_to_parse, default=True)
+
     return Settings(
         port=port,
         auth_disabled=auth_disabled,
         dashboard_password=dashboard_password,
         session_secret=session_secret,
+        cookie_secure=cookie_secure,
     )

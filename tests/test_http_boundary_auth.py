@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from wireguard_dashboard.app import create_app
@@ -116,3 +117,80 @@ def test_auth_disabled_allows_direct_access_without_login() -> None:
     res = custom_client.get("/")
     assert res.status_code == 200
     assert "WireGuard Companion" in res.text
+
+
+def test_reverse_proxy_internal_http_still_issues_secure_cookie() -> None:
+    settings = Settings(
+        port=8080,
+        dashboard_password="test-admin-password-123",
+        session_secret="s" * 32,
+        cookie_secure=True,
+    )
+    app = create_app(settings=settings)
+    # Reverse proxy speaks HTTP internally to container
+    proxy_client = TestClient(app, base_url="http://127.0.0.1:8080")
+    res = proxy_client.post(
+        "/login",
+        data={"password": "test-admin-password-123"},
+        headers={"x-forwarded-proto": "https"},
+        follow_redirects=False,
+    )
+    assert res.status_code == 303
+    set_cookie = res.headers.get("set-cookie", "")
+    assert "secure" in set_cookie.lower()
+    assert "httponly" in set_cookie.lower()
+    assert "samesite=strict" in set_cookie.lower()
+
+
+def test_untrusted_forwarded_proto_cannot_disable_secure_cookie() -> None:
+    settings = Settings(
+        port=8080,
+        dashboard_password="test-admin-password-123",
+        session_secret="s" * 32,
+        cookie_secure=True,
+    )
+    app = create_app(settings=settings)
+    client = TestClient(app, base_url="https://testserver")
+    # Untrusted client sends spoofed header attempting to degrade security
+    res = client.post(
+        "/login",
+        data={"password": "test-admin-password-123"},
+        headers={"x-forwarded-proto": "http"},
+        follow_redirects=False,
+    )
+    assert res.status_code == 303
+    set_cookie = res.headers.get("set-cookie", "")
+    assert "secure" in set_cookie.lower()
+
+
+def test_explicit_insecure_dev_mode_disables_secure_flag_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    settings = Settings(
+        port=8080,
+        dashboard_password="test-admin-password-123",
+        session_secret="s" * 32,
+        cookie_secure=False,
+    )
+    with caplog.at_level(logging.WARNING):
+        app = create_app(settings=settings)
+        assert any(
+            "SECURITY WARNING" in record.message and "COOKIE_SECURE=false" in record.message
+            for record in caplog.records
+        )
+
+    dev_client = TestClient(app, base_url="http://localhost:8080")
+    res = dev_client.post(
+        "/login",
+        data={"password": "test-admin-password-123"},
+        follow_redirects=False,
+    )
+    assert res.status_code == 303
+    set_cookie = res.headers.get("set-cookie", "")
+    # Secure flag must NOT be present in explicit dev mode
+    assert "secure" not in set_cookie.lower()
+    # But HttpOnly and SameSite=Strict must remain intact
+    assert "httponly" in set_cookie.lower()
+    assert "samesite=strict" in set_cookie.lower()

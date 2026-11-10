@@ -203,3 +203,61 @@ def test_auth_disabled_invalid_values_fail_strictly(invalid_val: str) -> None:
     ):
         with pytest.raises(ValueError, match="Must be explicitly 'true', 'false', '1', or '0'"):
             get_settings()
+
+
+def test_default_cookie_secure_is_true() -> None:
+    with mock.patch.dict(
+        os.environ,
+        {
+            "DASHBOARD_PASSWORD": "test-password-123",
+            "SESSION_SECRET": "s" * 32,
+        },
+        clear=True,
+    ):
+        settings = get_settings()
+        assert settings.cookie_secure is True
+
+
+def test_explicit_cookie_secure_false() -> None:
+    with mock.patch.dict(
+        os.environ,
+        {
+            "DASHBOARD_PASSWORD": "test-password-123",
+            "SESSION_SECRET": "s" * 32,
+            "COOKIE_SECURE": "false",
+        },
+        clear=True,
+    ):
+        settings = get_settings()
+        assert settings.cookie_secure is False
+
+
+def test_session_cookie_secure_alternate_name() -> None:
+    with mock.patch.dict(
+        os.environ,
+        {
+            "DASHBOARD_PASSWORD": "test-password-123",
+            "SESSION_SECRET": "s" * 32,
+            "SESSION_COOKIE_SECURE": "0",
+        },
+        clear=True,
+    ):
+        settings = get_settings()
+        assert settings.cookie_secure is False
+
+
+def test_conflicting_cookie_secure_names_fails_closed() -> None:
+    with mock.patch.dict(
+        os.environ,
+        {
+            "DASHBOARD_PASSWORD": "test-password-123",
+            "SESSION_SECRET": "s" * 32,
+            "COOKIE_SECURE": "true",
+            "SESSION_COOKIE_SECURE": "false",
+        },
+        clear=True,
+    ):
+        with pytest.raises(
+            ValueError, match="Conflicting configuration: COOKIE_SECURE and SESSION_COOKIE_SECURE"
+        ):
+            get_settings()

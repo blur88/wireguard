@@ -47,6 +47,12 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
             "disabled. Do not expose this service directly to public networks."
         )
 
+    if not resolved_settings.cookie_secure:
+        logger.warning(
+            "SECURITY WARNING: COOKIE_SECURE=false is active. Session cookies are being issued "
+            "without the Secure attribute. Never use this in production or over public networks."
+        )
+
     stored_password_hash: str | None = None
     credential_fingerprint: str | None = None
     rate_limiter = LoginRateLimiter(max_attempts=5, window_seconds=60.0)
@@ -167,7 +173,7 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
         set_session_cookie(
             response=response,
             token=token,
-            secure=(request.url.scheme == "https"),
+            secure=resolved_settings.cookie_secure,
         )
         return response
 
