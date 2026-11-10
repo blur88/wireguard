@@ -1,5 +1,8 @@
+import os
 from dataclasses import fields
 from pathlib import Path
+
+import pytest
 
 from wireguard_dashboard.peers.backend import (
     PeerBackend,
@@ -301,3 +304,58 @@ def test_toctou_symlink_race_protection(tmp_path: Path) -> None:
 
     peers = backend.list_peers()
     assert len(peers) == 0  # Symlink escape rejected via O_NOFOLLOW
+
+
+def test_toctou_conf_file_race_between_enumeration_and_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret_file = tmp_path / "secret.conf"
+    secret_file.write_text("[Interface]\nPrivateKey = SENSITIVE_ROOT_KEY\n")
+
+    peer_dir = tmp_path / "peer1"
+    peer_dir.mkdir()
+    conf_file = peer_dir / "peer1.conf"
+    conf_file.write_text("[Interface]\nAddress = 10.13.13.2/32\n")
+
+    backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
+    orig_listdir = os.listdir
+
+    def race_listdir(fd: int) -> list[str]:
+        entries = orig_listdir(fd)
+        # Emulate race condition: swap file with a symlink right after listdir enumeration
+        conf_file.unlink()
+        conf_file.symlink_to(secret_file)
+        return entries
+
+    monkeypatch.setattr(os, "listdir", race_listdir)
+
+    peers = backend.list_peers()
+    assert len(peers) == 0
+
+
+def test_toctou_directory_race_between_enumeration_and_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret_dir = tmp_path / "secret_server"
+    secret_dir.mkdir()
+    (secret_dir / "peer1.conf").write_text("[Interface]\nPrivateKey = SENSITIVE_ROOT_KEY\n")
+
+    peer_dir = tmp_path / "peer1"
+    peer_dir.mkdir()
+    (peer_dir / "peer1.conf").write_text("[Interface]\nAddress = 10.13.13.2/32\n")
+
+    backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
+    orig_listdir = os.listdir
+
+    def race_listdir(fd: int) -> list[str]:
+        entries = orig_listdir(fd)
+        # Emulate race condition: swap directory with a symlink right after listdir enumeration
+        (peer_dir / "peer1.conf").unlink()
+        peer_dir.rmdir()
+        peer_dir.symlink_to(secret_dir)
+        return entries
+
+    monkeypatch.setattr(os, "listdir", race_listdir)
+
+    peers = backend.list_peers()
+    assert len(peers) == 0

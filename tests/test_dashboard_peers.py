@@ -229,7 +229,15 @@ def test_rescan_reflects_newly_added_peer_without_modifying_files(tmp_path: Path
 def test_rescan_json_api_response(tmp_path: Path) -> None:
     p1 = tmp_path / "peer1"
     p1.mkdir()
-    (p1 / "peer1.conf").write_text("[Interface]\nAddress = 10.13.13.2/32\n")
+    (p1 / "peer1.conf").write_text(
+        "[Interface]\n"
+        "Address = 10.13.13.2/32\n"
+        "PrivateKey = SECRET_CLIENT_PRIVATE_KEY_NEVER_LEAK==\n"
+        "[Peer]\n"
+        "PublicKey = SECRET_SERVER_PUBLIC_KEY_NEVER_LEAK==\n"
+        "PresharedKey = SECRET_PRESHARED_KEY_NEVER_LEAK==\n"
+        "Endpoint = vpn.example.com:51820\n"
+    )
 
     client, cookies, csrf_token = _create_authenticated_client(config_dir=tmp_path)
     response = client.post(
@@ -242,7 +250,18 @@ def test_rescan_json_api_response(tmp_path: Path) -> None:
     assert data["status"] == "ok"
     assert "peers" in data
     assert len(data["peers"]) == 1
-    assert data["peers"][0]["peer_id"] == "peer1"
+    peer_data = data["peers"][0]
+    assert peer_data["peer_id"] == "peer1"
+    assert peer_data["friendly_name"] == "peer1"
+    assert peer_data["address"] == "10.13.13.2/32"
+    assert peer_data["endpoint"] == "vpn.example.com:51820"
+
+    # Strict check: No sensitive secrets leaked in JSON
+    raw_json = response.text
+    assert "SECRET" not in raw_json
+    assert "PrivateKey" not in raw_json
+    assert "PublicKey" not in raw_json
+    assert "PresharedKey" not in raw_json
 
 
 def test_auth_disabled_dashboard_and_rescan(tmp_path: Path) -> None:
