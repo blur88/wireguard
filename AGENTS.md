@@ -11,3 +11,7 @@ Canonical five-role triage labels (`needs-triage`, `needs-info`, `ready-for-agen
 ### Domain docs
 
 Single-context (`GLOSSARY.md` + `docs/adr/`). See `docs/agents/domain.md`.
+
+### Review policy
+
+Five-category finding classification (`blocking`, `non-blocking`, `accepted`, `deferred`, `duplicate`). See `docs/agents/review-policy.md`.
