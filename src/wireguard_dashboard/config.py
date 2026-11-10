@@ -13,7 +13,7 @@ def get_settings() -> Settings:
     """Parse and validate application settings from environment variables."""
     raw_port = os.environ.get("PORT", "").strip()
     if not raw_port:
-        return Settings(port=8080)
+        return Settings()
 
     try:
         port = int(raw_port)

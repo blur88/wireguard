@@ -1,4 +1,5 @@
 import contextlib
+import json
 import shutil
 import socket
 import subprocess
@@ -31,16 +32,23 @@ def get_free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _is_valid_healthz_response(raw_bytes: bytes) -> bool:
+    """Parse and verify that the /healthz response payload is valid JSON with status 'ok'."""
+    try:
+        data = json.loads(raw_bytes.decode("utf-8"))
+        return isinstance(data, dict) and data.get("status") == "ok"
+    except Exception:
+        return False
+
+
 def _wait_for_healthz(url: str, timeout: float = 15.0) -> bool:
-    """Poll the /healthz endpoint until it returns HTTP 200 with {'status': 'ok'} or times out."""
+    """Poll the /healthz endpoint until it returns HTTP 200 with valid JSON status 'ok' or times out."""
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:
-                if resp.status == 200:
-                    body = resp.read().decode("utf-8")
-                    if '{"status":"ok"}' in body.replace(" ", ""):
-                        return True
+                if resp.status == 200 and _is_valid_healthz_response(resp.read()):
+                    return True
         except Exception:
             time.sleep(0.5)
     return False
@@ -123,8 +131,7 @@ def test_container_default_port_healthz(docker_image: str) -> None:
     with running_container(docker_image, port=8080, read_only=True) as (_, host_port):
         with urllib.request.urlopen(f"http://127.0.0.1:{host_port}/healthz", timeout=2) as resp:
             assert resp.status == 200
-            body = resp.read().decode("utf-8")
-            assert '{"status":"ok"}' in body.replace(" ", "")
+            assert _is_valid_healthz_response(resp.read())
 
 
 def test_container_custom_port(docker_image: str) -> None:
@@ -134,6 +141,7 @@ def test_container_custom_port(docker_image: str) -> None:
     ) as (_, host_port):
         with urllib.request.urlopen(f"http://127.0.0.1:{host_port}/healthz", timeout=2) as resp:
             assert resp.status == 200
+            assert _is_valid_healthz_response(resp.read())
 
 
 def test_container_invalid_port_fails_safely(docker_image: str) -> None:

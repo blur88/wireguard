@@ -12,9 +12,20 @@ TEMPLATES_DIR = PACKAGE_DIR / "templates"
 STATIC_DIR = PACKAGE_DIR / "static"
 
 
+class WireGuardDashboardApp(FastAPI):
+    """FastAPI application that cleanly wraps the outermost ASGI middleware stack."""
+
+    def build_middleware_stack(self) -> ASGIApp:
+        inner_stack = super().build_middleware_stack()
+        return SecurityHeadersMiddleware(inner_stack)
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI companion application."""
-    app = FastAPI(
+    if not STATIC_DIR.is_dir():
+        raise RuntimeError(f"Static assets directory not found: {STATIC_DIR}")
+
+    app = WireGuardDashboardApp(
         title="WireGuard Companion Dashboard",
         docs_url=None,
         redoc_url=None,
@@ -22,9 +33,7 @@ def create_app() -> FastAPI:
     )
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-
-    if STATIC_DIR.is_dir():
-        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> Response:
@@ -32,15 +41,6 @@ def create_app() -> FastAPI:
             status_code=500,
             content={"detail": "Internal Server Error"},
         )
-
-    # Wrap the outermost ASGI stack so security headers are guaranteed even on unhandled 500s
-    original_build_middleware_stack = app.build_middleware_stack
-
-    def custom_build_middleware_stack() -> ASGIApp:
-        stack = original_build_middleware_stack()
-        return SecurityHeadersMiddleware(stack)
-
-    app.build_middleware_stack = custom_build_middleware_stack  # type: ignore[method-assign]
 
     @app.get("/healthz")
     def healthz() -> Dict[str, Any]:
