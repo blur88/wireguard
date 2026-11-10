@@ -12,6 +12,7 @@ class Settings:
     dashboard_password: str | None = None
     session_secret: str | None = None
     cookie_secure: bool = True
+    config_dir: Path = Path("/config")
 
 
 def _load_secret(
@@ -138,10 +139,14 @@ def get_settings() -> Settings:
     var_to_parse = "COOKIE_SECURE" if cookie_secure_val is not None else "SESSION_COOKIE_SECURE"
     cookie_secure = _parse_bool(var_to_parse, default=True)
 
+    raw_config_dir = os.environ.get("CONFIG_DIR", "").strip()
+    config_dir = Path(raw_config_dir) if raw_config_dir else Path("/config")
+
     return Settings(
         port=port,
         auth_disabled=auth_disabled,
         dashboard_password=dashboard_password,
         session_secret=session_secret,
         cookie_secure=cookie_secure,
+        config_dir=config_dir,
     )

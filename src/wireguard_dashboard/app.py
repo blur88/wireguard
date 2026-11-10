@@ -37,6 +37,8 @@ from wireguard_dashboard.auth.session import (
 )
 from wireguard_dashboard.config import Settings, get_settings
 from wireguard_dashboard.middleware import SecurityHeadersMiddleware
+from wireguard_dashboard.peers.backend import PeerBackend, ReadOnlyFilesystemBackend
+from wireguard_dashboard.telemetry.provider import NoOpTelemetryProvider, TelemetryProvider
 
 logger = logging.getLogger("wireguard_dashboard")
 
@@ -49,12 +51,24 @@ class UnauthenticatedError(Exception):
     """Raised when an unauthenticated request attempts to access a protected route."""
 
 
-def create_app(settings: Settings | None = None) -> ASGIApp:
+def create_app(
+    settings: Settings | None = None,
+    peer_backend: PeerBackend | None = None,
+    telemetry_provider: TelemetryProvider | None = None,
+) -> ASGIApp:
     """Create, configure, and return the companion application composed with security headers."""
     if not STATIC_DIR.is_dir():
         raise RuntimeError(f"Static assets directory not found: {STATIC_DIR}")
 
     resolved_settings = settings if settings is not None else get_settings()
+    active_peer_backend: PeerBackend = (
+        peer_backend
+        if peer_backend is not None
+        else ReadOnlyFilesystemBackend(config_dir=resolved_settings.config_dir)
+    )
+    active_telemetry: TelemetryProvider = (
+        telemetry_provider if telemetry_provider is not None else NoOpTelemetryProvider()
+    )
 
     if resolved_settings.auth_disabled:
         logger.warning(
@@ -322,6 +336,62 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
         clear_csrf_cookie(response, secure=resolved_settings.cookie_secure)
         return response
 
+    @fastapi_app.post("/rescan")
+    async def rescan_action(request: Request) -> Response:
+        session_id = get_authenticated_session_id(request)
+        if not session_id:
+            raise UnauthenticatedError()
+
+        if not resolved_settings.auth_disabled:
+            assert resolved_settings.session_secret is not None
+            cookie_csrf = request.cookies.get(CSRF_COOKIE_NAME)
+            form_csrf: str | None = None
+            try:
+                form = await request.form()
+                raw_form_csrf = form.get(CSRF_FORM_FIELD)
+                if isinstance(raw_form_csrf, str) and raw_form_csrf:
+                    form_csrf = raw_form_csrf
+            except Exception:
+                pass
+
+            header_csrf = request.headers.get(CSRF_HEADER_NAME)
+            submitted_csrf = form_csrf if form_csrf else header_csrf
+
+            if not verify_csrf_double_submit(
+                cookie_token=cookie_csrf,
+                submitted_token=submitted_csrf,
+                session_secret=resolved_settings.session_secret,
+                expected_session_id=session_id if session_id != "auth_disabled" else None,
+            ):
+                return Response(
+                    status_code=403,
+                    content="Forbidden: CSRF validation failed",
+                    media_type="text/plain",
+                )
+
+        fresh_peers = active_peer_backend.rescan()
+
+        accept_header = request.headers.get("accept", "").lower()
+        if "application/json" in accept_header:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "ok",
+                    "peers": [
+                        {
+                            "peer_id": p.peer_id,
+                            "friendly_name": p.friendly_name,
+                            "address": p.address,
+                            "dns": p.dns,
+                            "endpoint": p.endpoint,
+                        }
+                        for p in fresh_peers
+                    ],
+                },
+            )
+
+        return RedirectResponse(url="/", status_code=303)
+
     @fastapi_app.get(
         "/",
         response_class=HTMLResponse,
@@ -333,15 +403,36 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
             assert resolved_settings.session_secret is not None
             session_id = get_authenticated_session_id(request)
             if session_id:
-                csrf_token = create_session_csrf_token(
-                    session_id=session_id,
+                existing_cookie = request.cookies.get(CSRF_COOKIE_NAME)
+                if existing_cookie and verify_csrf_double_submit(
+                    cookie_token=existing_cookie,
+                    submitted_token=existing_cookie,
                     session_secret=resolved_settings.session_secret,
-                )
+                    expected_session_id=session_id if session_id != "auth_disabled" else None,
+                ):
+                    csrf_token = existing_cookie
+                else:
+                    csrf_token = create_session_csrf_token(
+                        session_id=session_id,
+                        session_secret=resolved_settings.session_secret,
+                    )
+
+        discovered = active_peer_backend.list_peers()
+        peer_items = [
+            {
+                "meta": p,
+                "telemetry": active_telemetry.get_peer_telemetry(p.peer_id),
+            }
+            for p in discovered
+        ]
 
         response = templates.TemplateResponse(
             request=request,
             name="base.html",
-            context={"csrf_token": csrf_token},
+            context={
+                "csrf_token": csrf_token,
+                "peers": peer_items,
+            },
         )
         if csrf_token is not None:
             set_csrf_cookie(
