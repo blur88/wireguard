@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -30,6 +30,10 @@ TEMPLATES_DIR = PACKAGE_DIR / "templates"
 STATIC_DIR = PACKAGE_DIR / "static"
 
 
+class UnauthenticatedError(Exception):
+    """Raised when an unauthenticated request attempts to access a protected route."""
+
+
 def create_app(settings: Settings | None = None) -> ASGIApp:
     """Create, configure, and return the companion application composed with security headers."""
     if not STATIC_DIR.is_dir():
@@ -51,11 +55,7 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
         assert resolved_settings.dashboard_password is not None
         assert resolved_settings.session_secret is not None
 
-        if resolved_settings.dashboard_password.startswith("$argon2id$"):
-            stored_password_hash = resolved_settings.dashboard_password
-        else:
-            stored_password_hash = hash_password(resolved_settings.dashboard_password)
-
+        stored_password_hash = hash_password(resolved_settings.dashboard_password)
         credential_fingerprint = compute_credential_fingerprint(
             credential=resolved_settings.dashboard_password,
             session_secret=resolved_settings.session_secret,
@@ -84,6 +84,17 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
             expected_fingerprint=credential_fingerprint,
             session_secret=resolved_settings.session_secret,
         )
+
+    def require_authenticated(request: Request) -> None:
+        """FastAPI dependency to protect endpoints against unauthenticated access."""
+        if not is_authenticated(request):
+            raise UnauthenticatedError()
+
+    @fastapi_app.exception_handler(UnauthenticatedError)
+    async def unauthenticated_exception_handler(
+        request: Request, exc: UnauthenticatedError
+    ) -> Response:
+        return RedirectResponse(url="/login", status_code=303)
 
     @fastapi_app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> Response:
@@ -123,28 +134,25 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
                 headers={"Retry-After": str(retry_after)},
             )
 
+        def fail_login() -> Response:
+            rate_limiter.record_failure(client_ip)
+            return templates.TemplateResponse(
+                request=request,
+                name="login.html",
+                context={"error": "Invalid credentials."},
+                status_code=401,
+            )
+
         form = await request.form()
         raw_password = form.get("password")
 
         # Guard against oversized payloads or non-string forms
         if not raw_password or not isinstance(raw_password, str) or len(raw_password) > 4096:
-            rate_limiter.record_failure(client_ip)
-            return templates.TemplateResponse(
-                request=request,
-                name="login.html",
-                context={"error": "Invalid credentials."},
-                status_code=401,
-            )
+            return fail_login()
 
         assert stored_password_hash is not None
         if not verify_password(raw_password, stored_password_hash):
-            rate_limiter.record_failure(client_ip)
-            return templates.TemplateResponse(
-                request=request,
-                name="login.html",
-                context={"error": "Invalid credentials."},
-                status_code=401,
-            )
+            return fail_login()
 
         rate_limiter.record_success(client_ip)
         assert credential_fingerprint is not None
@@ -156,17 +164,19 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
         )
 
         response = RedirectResponse(url="/", status_code=303)
-        is_secure = (
-            request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+        set_session_cookie(
+            response=response,
+            token=token,
+            secure=(request.url.scheme == "https"),
         )
-        set_session_cookie(response=response, token=token, secure=is_secure)
         return response
 
-    @fastapi_app.get("/", response_class=HTMLResponse)
+    @fastapi_app.get(
+        "/",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_authenticated)],
+    )
     def index(request: Request) -> Response:
-        if not is_authenticated(request):
-            return RedirectResponse(url="/login", status_code=303)
-
         return templates.TemplateResponse(
             request=request,
             name="base.html",

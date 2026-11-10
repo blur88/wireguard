@@ -89,13 +89,3 @@ def set_session_cookie(
         "path": "/",
     }
     response.set_cookie(**kwargs)
-
-
-def clear_session_cookie(response: Response) -> None:
-    """Clear the session cookie from the browser."""
-    response.delete_cookie(
-        key=SESSION_COOKIE_NAME,
-        path="/",
-        httponly=True,
-        samesite="strict",
-    )
