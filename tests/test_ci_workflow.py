@@ -1,26 +1,32 @@
 from pathlib import Path
+from typing import Any
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
 
-def test_ci_workflow_exists_and_is_valid_yaml() -> None:
-    """Ensure .github/workflows/ci.yml exists and parses as valid YAML."""
+@pytest.fixture(scope="module")
+def workflow_yaml() -> dict[str, Any]:
+    """Parse and return the CI workflow YAML contents."""
     assert CI_WORKFLOW.is_file(), f"Missing CI workflow file at {CI_WORKFLOW}"
     with open(CI_WORKFLOW, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     assert isinstance(data, dict), "CI workflow must be a valid YAML mapping"
+    return data
 
 
-def test_ci_workflow_triggers_on_push_and_pr_to_main() -> None:
+def test_ci_workflow_exists_and_is_valid_yaml(workflow_yaml: dict[str, Any]) -> None:
+    """Ensure .github/workflows/ci.yml exists and parses as valid YAML."""
+    assert workflow_yaml is not None
+    assert "jobs" in workflow_yaml
+
+
+def test_ci_workflow_triggers_on_push_and_pr_to_main(workflow_yaml: dict[str, Any]) -> None:
     """Ensure workflow triggers on push to main and pull_request to main."""
-    with open(CI_WORKFLOW, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-
-    # In YAML, 'on' may parse as True boolean if unquoted or 'on' string if quoted
-    triggers = data.get("on") or data.get(True)
+    triggers = workflow_yaml.get("on")
     assert triggers is not None, "Workflow must define triggers ('on')"
 
     assert "push" in triggers, "Workflow must trigger on 'push'"
