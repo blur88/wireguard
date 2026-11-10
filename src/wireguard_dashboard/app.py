@@ -1,4 +1,5 @@
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,16 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.types import ASGIApp
 
+from wireguard_dashboard.auth.csrf import (
+    CSRF_COOKIE_NAME,
+    CSRF_FORM_FIELD,
+    CSRF_HEADER_NAME,
+    clear_csrf_cookie,
+    create_preauth_csrf_token,
+    create_session_csrf_token,
+    set_csrf_cookie,
+    verify_csrf_double_submit,
+)
 from wireguard_dashboard.auth.rate_limit import LoginRateLimiter, get_client_ip
 from wireguard_dashboard.auth.security import (
     compute_credential_fingerprint,
@@ -15,8 +26,12 @@ from wireguard_dashboard.auth.security import (
     verify_password,
 )
 from wireguard_dashboard.auth.session import (
+    DEFAULT_SESSION_TTL_SECONDS,
     SESSION_COOKIE_NAME,
+    SessionRegistry,
+    clear_session_cookie,
     create_session_token,
+    extract_session_id,
     set_session_cookie,
     verify_session_token,
 )
@@ -56,6 +71,7 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
     stored_password_hash: str | None = None
     credential_fingerprint: str | None = None
     rate_limiter = LoginRateLimiter(max_attempts=5, window_seconds=60.0)
+    session_registry = SessionRegistry()
 
     if not resolved_settings.auth_disabled:
         assert resolved_settings.dashboard_password is not None
@@ -77,19 +93,25 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     fastapi_app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-    def is_authenticated(request: Request) -> bool:
+    def get_authenticated_session_id(request: Request) -> str | None:
         if resolved_settings.auth_disabled:
-            return True
+            return "auth_disabled"
         token = request.cookies.get(SESSION_COOKIE_NAME)
         if not token:
-            return False
+            return None
         assert credential_fingerprint is not None
         assert resolved_settings.session_secret is not None
-        return verify_session_token(
+        if not verify_session_token(
             token=token,
             expected_fingerprint=credential_fingerprint,
             session_secret=resolved_settings.session_secret,
-        )
+            registry=session_registry,
+        ):
+            return None
+        return extract_session_id(token)
+
+    def is_authenticated(request: Request) -> bool:
+        return get_authenticated_session_id(request) is not None
 
     def require_authenticated(request: Request) -> None:
         """FastAPI dependency to protect endpoints against unauthenticated access."""
@@ -100,7 +122,18 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
     async def unauthenticated_exception_handler(
         request: Request, exc: UnauthenticatedError
     ) -> Response:
-        return RedirectResponse(url="/login", status_code=303)
+        accept_header = request.headers.get("accept", "").lower()
+        if request.method == "GET" and (
+            "text/html" in accept_header or not accept_header or "*/*" in accept_header
+        ):
+            response = RedirectResponse(url="/login", status_code=303)
+            clear_session_cookie(response, secure=resolved_settings.cookie_secure)
+            clear_csrf_cookie(response, secure=resolved_settings.cookie_secure)
+            return response
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Unauthorized"},
+        )
 
     @fastapi_app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> Response:
@@ -117,16 +150,62 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
     def login_page(request: Request) -> Response:
         if is_authenticated(request):
             return RedirectResponse(url="/", status_code=303)
-        return templates.TemplateResponse(
+
+        csrf_token: str | None = None
+        if not resolved_settings.auth_disabled:
+            assert resolved_settings.session_secret is not None
+            existing_cookie = request.cookies.get(CSRF_COOKIE_NAME)
+            if existing_cookie and verify_csrf_double_submit(
+                cookie_token=existing_cookie,
+                submitted_token=existing_cookie,
+                session_secret=resolved_settings.session_secret,
+                expected_session_id=None,
+            ):
+                csrf_token = existing_cookie
+            else:
+                csrf_token = create_preauth_csrf_token(resolved_settings.session_secret)
+
+        response = templates.TemplateResponse(
             request=request,
             name="login.html",
-            context={},
+            context={"csrf_token": csrf_token},
         )
+        if csrf_token is not None:
+            set_csrf_cookie(
+                response=response,
+                token=csrf_token,
+                secure=resolved_settings.cookie_secure,
+            )
+        return response
 
     @fastapi_app.post("/login", response_class=HTMLResponse)
     async def login_action(request: Request) -> Response:
         if resolved_settings.auth_disabled:
             return RedirectResponse(url="/", status_code=303)
+
+        assert resolved_settings.session_secret is not None
+        assert stored_password_hash is not None
+        assert credential_fingerprint is not None
+
+        form = await request.form()
+
+        # CSRF check: Double-submit validation
+        cookie_csrf = request.cookies.get(CSRF_COOKIE_NAME)
+        form_csrf = form.get(CSRF_FORM_FIELD)
+        header_csrf = request.headers.get(CSRF_HEADER_NAME)
+        submitted_csrf = form_csrf if isinstance(form_csrf, str) and form_csrf else header_csrf
+
+        if not verify_csrf_double_submit(
+            cookie_token=cookie_csrf,
+            submitted_token=submitted_csrf,
+            session_secret=resolved_settings.session_secret,
+            expected_session_id=None,
+        ):
+            return Response(
+                status_code=403,
+                content="Forbidden: CSRF validation failed",
+                media_type="text/plain",
+            )
 
         client_ip = get_client_ip(request)
 
@@ -135,7 +214,10 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
             return templates.TemplateResponse(
                 request=request,
                 name="login.html",
-                context={"error": "Too many failed login attempts. Please try again later."},
+                context={
+                    "error": "Too many failed login attempts. Please try again later.",
+                    "csrf_token": cookie_csrf,
+                },
                 status_code=429,
                 headers={"Retry-After": str(retry_after)},
             )
@@ -145,27 +227,41 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
             return templates.TemplateResponse(
                 request=request,
                 name="login.html",
-                context={"error": "Invalid credentials."},
+                context={
+                    "error": "Invalid credentials.",
+                    "csrf_token": cookie_csrf,
+                },
                 status_code=401,
             )
 
-        form = await request.form()
         raw_password = form.get("password")
 
         # Guard against oversized payloads or non-string forms
         if not raw_password or not isinstance(raw_password, str) or len(raw_password) > 4096:
             return fail_login()
 
-        assert stored_password_hash is not None
         if not verify_password(raw_password, stored_password_hash):
             return fail_login()
 
         rate_limiter.record_success(client_ip)
-        assert credential_fingerprint is not None
-        assert resolved_settings.session_secret is not None
 
+        now = time.time()
         token = create_session_token(
             fingerprint=credential_fingerprint,
+            session_secret=resolved_settings.session_secret,
+            current_time=now,
+            ttl_seconds=DEFAULT_SESSION_TTL_SECONDS,
+        )
+        session_id = extract_session_id(token)
+        assert session_id is not None
+        session_registry.register(
+            session_id=session_id,
+            fingerprint=credential_fingerprint,
+            expires_at=now + DEFAULT_SESSION_TTL_SECONDS,
+        )
+
+        session_csrf = create_session_csrf_token(
+            session_id=session_id,
             session_secret=resolved_settings.session_secret,
         )
 
@@ -175,6 +271,55 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
             token=token,
             secure=resolved_settings.cookie_secure,
         )
+        set_csrf_cookie(
+            response=response,
+            token=session_csrf,
+            secure=resolved_settings.cookie_secure,
+        )
+        return response
+
+    @fastapi_app.post("/logout")
+    async def logout_action(request: Request) -> Response:
+        if resolved_settings.auth_disabled:
+            return RedirectResponse(url="/login", status_code=303)
+
+        session_id = get_authenticated_session_id(request)
+        if not session_id:
+            raise UnauthenticatedError()
+
+        assert resolved_settings.session_secret is not None
+
+        # CSRF check: Double-submit validation
+        cookie_csrf = request.cookies.get(CSRF_COOKIE_NAME)
+        form_csrf: str | None = None
+        try:
+            form = await request.form()
+            raw_form_csrf = form.get(CSRF_FORM_FIELD)
+            if isinstance(raw_form_csrf, str) and raw_form_csrf:
+                form_csrf = raw_form_csrf
+        except Exception:
+            pass
+
+        header_csrf = request.headers.get(CSRF_HEADER_NAME)
+        submitted_csrf = form_csrf if form_csrf else header_csrf
+
+        if not verify_csrf_double_submit(
+            cookie_token=cookie_csrf,
+            submitted_token=submitted_csrf,
+            session_secret=resolved_settings.session_secret,
+            expected_session_id=session_id,
+        ):
+            return Response(
+                status_code=403,
+                content="Forbidden: CSRF validation failed",
+                media_type="text/plain",
+            )
+
+        session_registry.revoke(session_id)
+
+        response = RedirectResponse(url="/login", status_code=303)
+        clear_session_cookie(response, secure=resolved_settings.cookie_secure)
+        clear_csrf_cookie(response, secure=resolved_settings.cookie_secure)
         return response
 
     @fastapi_app.get(
@@ -183,11 +328,28 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
         dependencies=[Depends(require_authenticated)],
     )
     def index(request: Request) -> Response:
-        return templates.TemplateResponse(
+        csrf_token: str | None = None
+        if not resolved_settings.auth_disabled:
+            assert resolved_settings.session_secret is not None
+            session_id = get_authenticated_session_id(request)
+            if session_id:
+                csrf_token = create_session_csrf_token(
+                    session_id=session_id,
+                    session_secret=resolved_settings.session_secret,
+                )
+
+        response = templates.TemplateResponse(
             request=request,
             name="base.html",
-            context={},
+            context={"csrf_token": csrf_token},
         )
+        if csrf_token is not None:
+            set_csrf_cookie(
+                response=response,
+                token=csrf_token,
+                secure=resolved_settings.cookie_secure,
+            )
+        return response
 
     # Wrap the completed FastAPI application with outermost ASGI security middleware
     return SecurityHeadersMiddleware(fastapi_app)

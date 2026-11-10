@@ -20,3 +20,19 @@ To resolve the circular dependency between issuing signed session cookies in Iss
   - Session-bound HMAC double-submit CSRF protection on state-changing endpoints (such as `POST /logout`).
   - Explicit `POST /logout` endpoint with instantaneous session registry removal.
 
+## Operational Model for Credential Rotation
+
+Credential configuration (`DASHBOARD_PASSWORD`, `SESSION_SECRET`, and their Docker secret `_FILE` alternatives) is evaluated and validated during application startup.
+
+In containerized deployments, credential and secret rotation takes effect when the container or application process restarts (e.g., via `docker compose restart` or pod recreation). The companion container intentionally avoids background filesystem watchers or polling daemons to remain lean, predictable, and fully unprivileged.
+
+When the application starts with rotated credentials, the server-derived `credential_fingerprint` changes and the in-memory registry initializes empty, immediately and irreversibly invalidating all active sessions across all devices.
+
+## In-Memory Session Lifecycle and Deterministic Memory Reclamation
+
+To prevent memory retention of expired session records without introducing background timer threads or external schedulers, the registry enforces deterministic lazy reclamation:
+- During any session verification (`is_active`), expired entries accessed by incoming requests are purged immediately.
+- During registration of any new session (`register`), all expired entries in the registry are reclaimed in-band under the registry lock.
+- Explicit logout (`revoke`) instantly purges the specific active session and prevents token resurrection.
+
+

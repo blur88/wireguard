@@ -2,8 +2,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from wireguard_dashboard.app import create_app
+from wireguard_dashboard.auth.csrf import CSRF_COOKIE_NAME, CSRF_FORM_FIELD
 from wireguard_dashboard.auth.session import SESSION_COOKIE_NAME
 from wireguard_dashboard.config import Settings
+
+
+def _fetch_csrf_token(client: TestClient) -> str:
+    """Helper to load /login, acquire pre-auth CSRF token, and return it."""
+    res = client.get("/login")
+    token = res.cookies.get(CSRF_COOKIE_NAME)
+    assert isinstance(token, str)
+    return token
 
 
 def test_login_page_renders_dark_mode_form(client: TestClient) -> None:
@@ -34,9 +43,10 @@ def test_static_assets_remain_unauthenticated(client: TestClient) -> None:
 
 
 def test_successful_login_sets_cookie_and_redirects(client: TestClient) -> None:
+    csrf = _fetch_csrf_token(client)
     response = client.post(
         "/login",
-        data={"password": "test-admin-password-123"},
+        data={"password": "test-admin-password-123", CSRF_FORM_FIELD: csrf},
         follow_redirects=False,
     )
     assert response.status_code == 303
@@ -53,9 +63,10 @@ def test_successful_login_sets_cookie_and_redirects(client: TestClient) -> None:
 
 def test_successful_session_allows_access_to_protected_route(client: TestClient) -> None:
     # 1. Login
+    csrf = _fetch_csrf_token(client)
     login_res = client.post(
         "/login",
-        data={"password": "test-admin-password-123"},
+        data={"password": "test-admin-password-123", CSRF_FORM_FIELD: csrf},
         follow_redirects=False,
     )
     assert login_res.status_code == 303
@@ -67,9 +78,10 @@ def test_successful_session_allows_access_to_protected_route(client: TestClient)
 
 
 def test_invalid_password_returns_401_without_leaks(client: TestClient) -> None:
+    csrf = _fetch_csrf_token(client)
     response = client.post(
         "/login",
-        data={"password": "wrong-password"},
+        data={"password": "wrong-password", CSRF_FORM_FIELD: csrf},
         follow_redirects=False,
     )
     assert response.status_code == 401
@@ -79,13 +91,22 @@ def test_invalid_password_returns_401_without_leaks(client: TestClient) -> None:
 
 
 def test_failed_logins_trigger_429(client: TestClient) -> None:
+    csrf = _fetch_csrf_token(client)
     # Attempt 5 wrong logins
     for _ in range(5):
-        res = client.post("/login", data={"password": "wrong"}, follow_redirects=False)
+        res = client.post(
+            "/login",
+            data={"password": "wrong", CSRF_FORM_FIELD: csrf},
+            follow_redirects=False,
+        )
         assert res.status_code == 401
 
     # 6th attempt should be rejected with 429
-    res6 = client.post("/login", data={"password": "wrong"}, follow_redirects=False)
+    res6 = client.post(
+        "/login",
+        data={"password": "wrong", CSRF_FORM_FIELD: csrf},
+        follow_redirects=False,
+    )
     assert res6.status_code == 429
     assert "Retry-After" in res6.headers or "retry-after" in res6.headers
 
@@ -129,9 +150,11 @@ def test_reverse_proxy_internal_http_still_issues_secure_cookie() -> None:
     app = create_app(settings=settings)
     # Reverse proxy speaks HTTP internally to container
     proxy_client = TestClient(app, base_url="http://127.0.0.1:8080")
+    csrf = _fetch_csrf_token(proxy_client)
+    proxy_client.cookies.set(CSRF_COOKIE_NAME, csrf)
     res = proxy_client.post(
         "/login",
-        data={"password": "test-admin-password-123"},
+        data={"password": "test-admin-password-123", CSRF_FORM_FIELD: csrf},
         headers={"x-forwarded-proto": "https"},
         follow_redirects=False,
     )
@@ -152,9 +175,10 @@ def test_untrusted_forwarded_proto_cannot_disable_secure_cookie() -> None:
     app = create_app(settings=settings)
     client = TestClient(app, base_url="https://testserver")
     # Untrusted client sends spoofed header attempting to degrade security
+    csrf = _fetch_csrf_token(client)
     res = client.post(
         "/login",
-        data={"password": "test-admin-password-123"},
+        data={"password": "test-admin-password-123", CSRF_FORM_FIELD: csrf},
         headers={"x-forwarded-proto": "http"},
         follow_redirects=False,
     )
@@ -182,9 +206,10 @@ def test_explicit_insecure_dev_mode_disables_secure_flag_with_warning(
         )
 
     dev_client = TestClient(app, base_url="http://localhost:8080")
+    csrf = _fetch_csrf_token(dev_client)
     res = dev_client.post(
         "/login",
-        data={"password": "test-admin-password-123"},
+        data={"password": "test-admin-password-123", CSRF_FORM_FIELD: csrf},
         follow_redirects=False,
     )
     assert res.status_code == 303
