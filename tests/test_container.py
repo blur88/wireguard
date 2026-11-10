@@ -4,10 +4,11 @@ import shutil
 import socket
 import subprocess
 import time
-from typing import Dict, Generator, Optional, Tuple
 import urllib.error
 import urllib.request
 import uuid
+from collections.abc import Generator
+
 import pytest
 
 
@@ -42,7 +43,7 @@ def _is_valid_healthz_response(raw_bytes: bytes) -> bool:
 
 
 def _wait_for_healthz(url: str, timeout: float = 15.0) -> bool:
-    """Poll the /healthz endpoint until it returns HTTP 200 with valid JSON status 'ok' or times out."""
+    """Poll the /healthz endpoint until it returns HTTP 200 with valid JSON status 'ok'."""
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
@@ -58,17 +59,21 @@ def _wait_for_healthz(url: str, timeout: float = 15.0) -> bool:
 def running_container(
     image: str,
     port: int = 8080,
-    env: Optional[Dict[str, str]] = None,
+    env: dict[str, str] | None = None,
     read_only: bool = False,
-) -> Generator[Tuple[str, int], None, None]:
+) -> Generator[tuple[str, int], None, None]:
     """Context manager to spawn, verify readiness of, and reliably teardown a test container."""
     host_port = get_free_port()
     container_name = f"wg-test-{uuid.uuid4().hex[:8]}"
 
     cmd = [
-        "docker", "run", "-d",
-        "--name", container_name,
-        "-p", f"127.0.0.1:{host_port}:{port}",
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        container_name,
+        "-p",
+        f"127.0.0.1:{host_port}:{port}",
     ]
     if read_only:
         cmd.extend(["--read-only", "--tmpfs", "/tmp", "--security-opt", "no-new-privileges:true"])
@@ -82,17 +87,18 @@ def running_container(
     try:
         url = f"http://127.0.0.1:{host_port}/healthz"
         if not _wait_for_healthz(url):
-            logs = subprocess.run(["docker", "logs", container_name], capture_output=True, text=True)
-            pytest.fail(f"Container failed to respond to /healthz.\nLogs:\n{logs.stdout}\n{logs.stderr}")
+            logs = subprocess.run(
+                ["docker", "logs", container_name], capture_output=True, text=True
+            )
+            pytest.fail(
+                f"Container failed to respond to /healthz.\nLogs:\n{logs.stdout}\n{logs.stderr}"
+            )
         yield container_name, host_port
     finally:
         subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
 
 
-pytestmark = pytest.mark.skipif(
-    not is_docker_available(),
-    reason="Docker daemon is not available in test environment",
-)
+pytestmark = pytest.mark.container
 
 IMAGE_TAG = "wireguard-dashboard-test:ci"
 
@@ -100,6 +106,9 @@ IMAGE_TAG = "wireguard-dashboard-test:ci"
 @pytest.fixture(scope="module")
 def docker_image() -> Generator[str, None, None]:
     """Build the Docker image once for container tests."""
+    if not is_docker_available():
+        pytest.skip("Docker daemon is not available in test environment")
+
     build = subprocess.run(
         ["docker", "build", "-t", IMAGE_TAG, "."],
         capture_output=True,
@@ -136,9 +145,10 @@ def test_container_default_port_healthz(docker_image: str) -> None:
 
 def test_container_custom_port(docker_image: str) -> None:
     custom_port = 9050
-    with running_container(
-        docker_image, port=custom_port, env={"PORT": str(custom_port)}
-    ) as (_, host_port):
+    with running_container(docker_image, port=custom_port, env={"PORT": str(custom_port)}) as (
+        _,
+        host_port,
+    ):
         with urllib.request.urlopen(f"http://127.0.0.1:{host_port}/healthz", timeout=2) as resp:
             assert resp.status == 200
             assert _is_valid_healthz_response(resp.read())
@@ -149,9 +159,13 @@ def test_container_invalid_port_fails_safely(docker_image: str) -> None:
     container_name = f"wg-test-invalid-{container_suffix}"
 
     run_cmd = [
-        "docker", "run", "-d",
-        "--name", container_name,
-        "-e", "PORT=invalid_port_999999",
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        container_name,
+        "-e",
+        "PORT=invalid_port_999999",
         docker_image,
     ]
 

@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-import pytest
+
 from wireguard_dashboard.app import create_app
 
 

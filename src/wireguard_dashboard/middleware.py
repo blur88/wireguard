@@ -1,8 +1,12 @@
-from typing import Any, List, Tuple
+from typing import Any
+
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-HARDENED_SECURITY_HEADERS: List[Tuple[bytes, bytes]] = [
-    (b"content-security-policy", b"default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"),
+HARDENED_SECURITY_HEADERS: list[tuple[bytes, bytes]] = [
+    (
+        b"content-security-policy",
+        b"default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+    ),
     (b"x-frame-options", b"DENY"),
     (b"x-content-type-options", b"nosniff"),
     (b"referrer-policy", b"no-referrer"),
@@ -27,7 +31,7 @@ class SecurityHeadersMiddleware:
 
         async def send_with_security_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                raw_headers: List[Tuple[bytes, bytes]] = list(message.get("headers", []))
+                raw_headers: list[tuple[bytes, bytes]] = list(message.get("headers", []))
                 filtered_headers = [
                     (name, value)
                     for name, value in raw_headers

@@ -17,8 +17,8 @@ def get_settings() -> Settings:
 
     try:
         port = int(raw_port)
-    except ValueError:
-        raise ValueError(f"Invalid PORT: '{raw_port}' is not a valid integer")
+    except ValueError as err:
+        raise ValueError(f"Invalid PORT: '{raw_port}' is not a valid integer") from err
 
     if port < 1 or port > 65535:
         raise ValueError(f"Invalid PORT: {port} must be between 1 and 65535")

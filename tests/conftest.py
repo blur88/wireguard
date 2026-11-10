@@ -1,6 +1,6 @@
-from typing import Dict
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
+
 from tests.helpers import EXPECTED_SECURITY_HEADERS
 from wireguard_dashboard.app import create_app
 
@@ -12,5 +12,5 @@ def client() -> TestClient:
 
 
 @pytest.fixture
-def security_headers() -> Dict[str, str]:
+def security_headers() -> dict[str, str]:
     return EXPECTED_SECURITY_HEADERS

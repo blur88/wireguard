@@ -1,10 +1,12 @@
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
+
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.types import ASGIApp
+
 from wireguard_dashboard.middleware import SecurityHeadersMiddleware
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -35,7 +37,7 @@ def create_app() -> ASGIApp:
         )
 
     @fastapi_app.get("/healthz")
-    def healthz() -> Dict[str, Any]:
+    def healthz() -> dict[str, Any]:
         return {"status": "ok"}
 
     @fastapi_app.get("/", response_class=HTMLResponse)

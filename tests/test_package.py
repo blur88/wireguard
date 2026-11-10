@@ -1,8 +1,7 @@
-from pathlib import Path
 import subprocess
 import sys
 import zipfile
-import pytest
+from pathlib import Path
 
 
 def test_wheel_packaging_includes_templates_and_static_assets(tmp_path: Path) -> None:
@@ -25,7 +24,9 @@ def test_wheel_packaging_includes_templates_and_static_assets(tmp_path: Path) ->
     ]
 
     res = subprocess.run(build_cmd, capture_output=True, text=True, timeout=60)
-    assert res.returncode == 0, f"pip wheel build failed:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}"
+    assert res.returncode == 0, (
+        f"pip wheel build failed:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}"
+    )
 
     wheel_files = list(dist_dir.glob("*.whl"))
     assert len(wheel_files) == 1, f"Expected 1 wheel, found: {wheel_files}"
