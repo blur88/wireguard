@@ -14,6 +14,12 @@
       <span>🛡️ WireGuard Companion</span>
       <span class="badge">Read-Only</span>
     </div>
+    {% if csrf_token %}
+    <form method="POST" action="/logout" class="logout-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn-logout">Logout</button>
+    </form>
+    {% endif %}
   </header>
   <main>
     {% block content %}

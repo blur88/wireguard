@@ -2,7 +2,9 @@ from fastapi import Response
 
 from wireguard_dashboard.auth.session import (
     SESSION_COOKIE_NAME,
+    SessionRegistry,
     create_session_token,
+    extract_session_id,
     set_session_cookie,
     verify_session_token,
 )
@@ -150,3 +152,62 @@ def test_set_session_cookie_security_attributes() -> None:
     assert "Secure" in header
     assert "Max-Age=86400" in header
     assert "path=/" in header.lower()
+
+
+def test_verify_session_token_checks_registry() -> None:
+    session_secret = "s" * 32
+    fingerprint = "f" * 64
+    current_time = 1000.0
+
+    token = create_session_token(
+        fingerprint=fingerprint,
+        session_secret=session_secret,
+        current_time=current_time,
+        ttl_seconds=3600,
+    )
+    session_id = extract_session_id(token)
+    assert session_id is not None
+
+    registry = SessionRegistry()
+
+    # Valid crypto signature, but not in registry yet -> False
+    assert (
+        verify_session_token(
+            token=token,
+            expected_fingerprint=fingerprint,
+            session_secret=session_secret,
+            registry=registry,
+            current_time=current_time + 100,
+        )
+        is False
+    )
+
+    # Register in registry -> True
+    registry.register(
+        session_id=session_id,
+        fingerprint=fingerprint,
+        expires_at=current_time + 3600,
+    )
+    assert (
+        verify_session_token(
+            token=token,
+            expected_fingerprint=fingerprint,
+            session_secret=session_secret,
+            registry=registry,
+            current_time=current_time + 100,
+        )
+        is True
+    )
+
+    # Revoke in registry -> False
+    registry.revoke(session_id)
+    assert (
+        verify_session_token(
+            token=token,
+            expected_fingerprint=fingerprint,
+            session_secret=session_secret,
+            registry=registry,
+            current_time=current_time + 100,
+        )
+        is False
+    )
