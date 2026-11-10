@@ -384,6 +384,31 @@ def create_app(
         return RedirectResponse(url="/", status_code=303)
 
     @fastapi_app.get(
+        "/peers/{peer_id}/conf",
+        response_class=Response,
+        dependencies=[Depends(require_authenticated)],
+    )
+    def get_peer_conf_endpoint(peer_id: str) -> Response:
+        conf_content = active_peer_backend.get_peer_conf(peer_id)
+        if conf_content is None:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Peer not found"},
+            )
+
+        filename = f"{peer_id}.conf"
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        }
+        return Response(
+            content=conf_content,
+            media_type="text/plain; charset=utf-8",
+            headers=headers,
+        )
+
+    @fastapi_app.get(
         "/",
         response_class=HTMLResponse,
         dependencies=[Depends(require_authenticated)],

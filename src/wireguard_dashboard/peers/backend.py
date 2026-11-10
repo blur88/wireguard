@@ -40,6 +40,10 @@ class PeerBackend(Protocol):
         """Retrieve metadata for a specific peer identifier."""
         ...
 
+    def get_peer_conf(self, peer_id: str) -> str | None:
+        """Retrieve the raw configuration content for a specific peer on demand."""
+        ...
+
 
 def _natural_sort_key(s: str) -> list[int | str]:
     """Sort key for natural alphanumeric ordering (e.g. peer2 before peer10)."""
@@ -209,3 +213,74 @@ class ReadOnlyFilesystemBackend:
             if peer.peer_id == peer_id:
                 return peer
         return None
+
+    def get_peer_conf(self, peer_id: str) -> str | None:
+        """Retrieve raw configuration content for a peer on demand descriptor-relatively."""
+        if not peer_id or peer_id in EXCLUDED_NAMES or not PEER_PATTERN.match(peer_id):
+            return None
+
+        if not self.config_dir.is_dir():
+            return None
+
+        base_fd: int | None = None
+        try:
+            base_fd = os.open(str(self.config_dir), os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        except OSError as err:
+            logger.warning(
+                "Failed to open base configuration directory %s: %s",
+                self.config_dir,
+                err,
+            )
+            return None
+
+        try:
+            sub_fd: int | None = None
+            try:
+                sub_fd = os.open(
+                    peer_id,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=base_fd,
+                )
+            except OSError:
+                return None
+
+            try:
+                st = os.fstat(sub_fd)
+                if not stat.S_ISDIR(st.st_mode):
+                    return None
+
+                conf_filename = f"{peer_id}.conf"
+                conf_fd: int | None = None
+                try:
+                    conf_fd = os.open(
+                        conf_filename,
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                        dir_fd=sub_fd,
+                    )
+                except OSError:
+                    return None
+
+                try:
+                    c_st = os.fstat(conf_fd)
+                    if not stat.S_ISREG(c_st.st_mode):
+                        return None
+
+                    if c_st.st_size > MAX_CONF_SIZE_BYTES:
+                        logger.warning(
+                            "Configuration for peer '%s' exceeds limit (%d bytes); rejecting",
+                            peer_id,
+                            c_st.st_size,
+                        )
+                        return None
+
+                    raw_bytes = os.read(conf_fd, MAX_CONF_SIZE_BYTES)
+                    return raw_bytes.decode("utf-8", errors="replace")
+                finally:
+                    if conf_fd is not None:
+                        os.close(conf_fd)
+            finally:
+                if sub_fd is not None:
+                    os.close(sub_fd)
+        finally:
+            if base_fd is not None:
+                os.close(base_fd)
