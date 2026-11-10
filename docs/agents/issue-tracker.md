@@ -49,6 +49,19 @@ GitHub shares one number space across issues and PRs, so a bare `#42` may be eit
 
 Create a GitHub issue.
 
+## Ticket Prerequisite Ownership
+
+When decomposing feature specs into tickets (see `docs/adr/0002-stateless-cookie-sessions-no-database.md`):
+- Any cryptographic key, configuration source, or shared prerequisite required for an upstream ticket's externally observable deliverable must be included in that ticket or provided by an already completed dependency.
+- Never defer essential prerequisites to downstream tickets.
+- Before publishing tickets:
+  - Check each ticket's prerequisites.
+  - Identify configuration and security dependencies.
+  - Ensure upstream deliverables can be implemented and tested independently.
+  - Avoid circular dependencies.
+  - Keep advanced lifecycle features in the appropriate downstream ticket.
+
+
 ## When a skill says "fetch the relevant ticket"
 
 Read it as in **Read an issue** above.

@@ -10,3 +10,13 @@ Explicitly discouraged patterns:
 - **Instance monkey-patching**: Mutating `app.build_middleware_stack` on a live instance couples application behavior to Starlette internal lifecycle mechanics.
 - **Overriding `build_middleware_stack()`**: Subclassing framework classes to inject outer middleware overrides internal wiring and risks breaking across framework upgrades.
 - **Framework-internal ordering assumptions**: Do not rely on internal middleware registration order to catch errors handled by outer framework error middlewares. Wrap the completed application directly.
+
+## Security Header Provenance and Reverse-Proxy Trust
+
+Security-sensitive decisions must never rely on untrusted reverse-proxy forwarding headers:
+- Do not trust `X-Forwarded-For`, `X-Forwarded-Proto`, or equivalent forwarding headers unless the immediate proxy is explicitly configured and verified as trusted.
+- Do not permit untrusted headers to weaken authentication, rate limiting, transport security, or cookie protection.
+- Production session cookies must remain `Secure` by default.
+- Reverse-proxy TLS termination must use explicitly trusted proxy configuration rather than blind header inheritance.
+- Development-only insecure cookie settings must require explicit opt-in (e.g., `COOKIE_SECURE=false`) and must never become the default production behavior.
+
