@@ -33,6 +33,42 @@ Infer the repo from `git remote -v`; `gh` does this automatically when run insid
 
 File issues only into the user's own repo. Never file into `mattpocock/skills` (the repo these skills come from) unless the user owns it. In a fork, `gh` can default to the upstream parent, so before the first `gh issue create` of a session, check the target with `gh repo view --json nameWithOwner` and confirm it with the user if it is not their repo.
 
+## Code Scanning Alerts
+
+When querying, inspecting, dismissing, or verifying GitHub CodeQL code scanning alerts from agent sessions:
+
+- **Fetch alert details**: Inspect rule metadata, CWE classifications, and code flow locations:
+  ```bash
+  gh api repos/<owner>/<repo>/code-scanning/alerts/<number>
+  ```
+  Inspection projection:
+  ```bash
+  gh api repos/<owner>/<repo>/code-scanning/alerts/<number> \
+    --jq '{number, rule: .rule.id, description: .rule.description, cwe: .rule.tags, state: .state, location: .most_recent_instance.location}'
+  ```
+
+- **Dismiss an alert**: Update state via `PATCH` specifying state, reason, and comment:
+  ```bash
+  gh api --method PATCH repos/<owner>/<repo>/code-scanning/alerts/<number> \
+    -f state="dismissed" \
+    -f dismissed_reason="false positive" \
+    -f dismissed_comment="Concise technical rationale citing relevant ADRs or domain constraints."
+  ```
+  Permitted `dismissed_reason` values:
+  - `"false positive"`
+  - `"won't fix"`
+  - `"used in tests"`
+
+- **Character limit ceiling on `dismissed_comment`**:
+  > [!WARNING]
+  > **Strict 280-character limit**: GitHub's Code Scanning API enforces a strict 280-character ceiling on `dismissed_comment`. Any payload exceeding 280 characters triggers HTTP `422 Unprocessable Entity` errors. Keep technical rationales concise, citing relevant ADRs or domain constraints without fluff.
+
+- **Verify updated alert state**: Validate that the alert state, dismissal reason, and comment were applied:
+  ```bash
+  gh api repos/<owner>/<repo>/code-scanning/alerts/<number> \
+    --jq '{number, state, dismissed_reason, dismissed_comment}'
+  ```
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
