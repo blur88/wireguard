@@ -1,6 +1,8 @@
 import os
 from unittest import mock
+
 import pytest
+
 from wireguard_dashboard.config import get_settings
 
 

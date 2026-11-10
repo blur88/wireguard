@@ -1,5 +1,7 @@
 import sys
+
 import uvicorn
+
 from wireguard_dashboard.config import get_settings
 
 

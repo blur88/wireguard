@@ -1,6 +1,7 @@
-from typing import Any, Dict
-from fastapi.testclient import TestClient
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 from tests.helpers import assert_security_headers
 from wireguard_dashboard.app import create_app
 
@@ -15,7 +16,7 @@ from wireguard_dashboard.app import create_app
 )
 def test_security_headers_across_standard_status_codes(
     client: TestClient,
-    security_headers: Dict[str, str],
+    security_headers: dict[str, str],
     method: str,
     path: str,
     expected_status: int,
@@ -25,12 +26,15 @@ def test_security_headers_across_standard_status_codes(
     assert_security_headers(response.headers, security_headers)
 
 
-def test_security_headers_present_on_unhandled_500(security_headers: Dict[str, str]) -> None:
-    app: Any = create_app()
+def test_security_headers_present_on_unhandled_500(security_headers: dict[str, str]) -> None:
+    app = create_app()
+    fastapi_app = getattr(app, "app", None)
+    assert isinstance(fastapi_app, FastAPI)
 
-    @app.get("/_test/unhandled-crash")
     def crash_route() -> None:
         raise RuntimeError("Simulated unhandled runtime failure in application")
+
+    fastapi_app.add_api_route("/_test/unhandled-crash", crash_route, methods=["GET"])
 
     client = TestClient(app, raise_server_exceptions=False)
     response = client.get("/_test/unhandled-crash")
@@ -39,7 +43,13 @@ def test_security_headers_present_on_unhandled_500(security_headers: Dict[str, s
     assert_security_headers(response.headers, security_headers)
 
     body = response.text.lower()
-    for sensitive_word in ("traceback", "runtimeerror", "simulated unhandled", "file \"/", "site-packages"):
+    for sensitive_word in (
+        "traceback",
+        "runtimeerror",
+        "simulated unhandled",
+        'file "/',
+        "site-packages",
+    ):
         assert sensitive_word not in body
 
 
@@ -48,5 +58,5 @@ def test_error_responses_expose_no_stacktraces_or_paths(client: TestClient) -> N
     assert response.status_code == 404
 
     body = response.text.lower()
-    for sensitive_word in ("traceback", "file \"/", "site-packages", "internal server error"):
+    for sensitive_word in ("traceback", 'file "/', "site-packages", "internal server error"):
         assert sensitive_word not in body
