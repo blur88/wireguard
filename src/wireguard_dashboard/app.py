@@ -12,20 +12,12 @@ TEMPLATES_DIR = PACKAGE_DIR / "templates"
 STATIC_DIR = PACKAGE_DIR / "static"
 
 
-class WireGuardDashboardApp(FastAPI):
-    """FastAPI application that cleanly wraps the outermost ASGI middleware stack."""
-
-    def build_middleware_stack(self) -> ASGIApp:
-        inner_stack = super().build_middleware_stack()
-        return SecurityHeadersMiddleware(inner_stack)
-
-
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI companion application."""
+def create_app() -> ASGIApp:
+    """Create, configure, and return the companion application composed with security headers."""
     if not STATIC_DIR.is_dir():
         raise RuntimeError(f"Static assets directory not found: {STATIC_DIR}")
 
-    app = WireGuardDashboardApp(
+    fastapi_app = FastAPI(
         title="WireGuard Companion Dashboard",
         docs_url=None,
         redoc_url=None,
@@ -33,20 +25,20 @@ def create_app() -> FastAPI:
     )
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    fastapi_app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-    @app.exception_handler(Exception)
+    @fastapi_app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> Response:
         return JSONResponse(
             status_code=500,
             content={"detail": "Internal Server Error"},
         )
 
-    @app.get("/healthz")
+    @fastapi_app.get("/healthz")
     def healthz() -> Dict[str, Any]:
         return {"status": "ok"}
 
-    @app.get("/", response_class=HTMLResponse)
+    @fastapi_app.get("/", response_class=HTMLResponse)
     def index(request: Request) -> HTMLResponse:
         return templates.TemplateResponse(
             request=request,
@@ -54,4 +46,5 @@ def create_app() -> FastAPI:
             context={},
         )
 
-    return app
+    # Wrap the completed FastAPI application with outermost ASGI security middleware
+    return SecurityHeadersMiddleware(fastapi_app)

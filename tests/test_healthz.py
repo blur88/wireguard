@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 import pytest
+from wireguard_dashboard.app import create_app
 
 
 def test_healthz_returns_ok_status(client: TestClient) -> None:
@@ -22,3 +23,11 @@ def test_healthz_exposes_no_sensitive_diagnostics(client: TestClient) -> None:
     text = response.text.lower()
     for sensitive_word in ("path", "secret", "password", "token", "env", "config", "traceback"):
         assert sensitive_word not in text
+
+
+def test_asgi_lifespan_lifecycle_supported() -> None:
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.get("/healthz")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}

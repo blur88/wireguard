@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Any, Dict
 from fastapi.testclient import TestClient
 import pytest
 from tests.helpers import assert_security_headers
@@ -26,7 +26,7 @@ def test_security_headers_across_standard_status_codes(
 
 
 def test_security_headers_present_on_unhandled_500(security_headers: Dict[str, str]) -> None:
-    app = create_app()
+    app: Any = create_app()
 
     @app.get("/_test/unhandled-crash")
     def crash_route() -> None:

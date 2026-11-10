@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import Any, List, Tuple
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 HARDENED_SECURITY_HEADERS: List[Tuple[bytes, bytes]] = [
@@ -15,7 +15,7 @@ OVERRIDDEN_SECURITY_HEADER_NAMES: frozenset[bytes] = frozenset(
 
 
 class SecurityHeadersMiddleware:
-    """Pure ASGI middleware enforcing hardened HTTP security headers on all responses."""
+    """Outermost ASGI middleware enforcing hardened HTTP security headers on all responses."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -38,3 +38,6 @@ class SecurityHeadersMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_with_security_headers)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.app, name)
