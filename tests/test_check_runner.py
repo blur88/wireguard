@@ -83,25 +83,28 @@ def test_check_script_rejects_unsupported_and_conflicting_arguments(
 
 def test_check_script_full_requires_docker_or_fails(tmp_path: Path) -> None:
     """Ensure check.sh --full fails with non-zero exit if Docker daemon is not accessible."""
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    fake_docker = fake_bin / "docker"
-    fake_docker.write_text("#!/bin/sh\nexit 1\n")
-    fake_docker.chmod(0o755)
+    sandbox_root = tmp_path / "sandbox"
+    log_file = sandbox_root / "invocations.log"
+    docker_failing_script = f'#!/bin/sh\necho "$(basename "$0") $*" >> "{log_file}"\nexit 1\n'
 
-    env = os.environ.copy()
-    env["PATH"] = f"{fake_bin}{os.path.pathsep}{env.get('PATH', '')}"
+    runner, runner_log, sandbox_root = setup_fake_runner_env(
+        tmp_path,
+        tool_overrides={"docker": docker_failing_script},
+    )
 
     res = subprocess.run(
-        [str(CHECK_SCRIPT), "--full"],
-        cwd=REPO_ROOT,
+        [str(runner), "--full"],
+        cwd=sandbox_root,
         capture_output=True,
         text=True,
-        env=env,
     )
     assert res.returncode != 0
     combined = (res.stdout + res.stderr).lower()
     assert "docker" in combined
+
+    recorded_calls = _read_calls(runner_log)
+    assert "docker info" in recorded_calls
+    assert not any("pytest" in call for call in recorded_calls)
 
 
 def test_check_script_fix_executes_expected_sequence_and_excludes_container(
