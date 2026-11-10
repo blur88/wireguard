@@ -14,6 +14,159 @@ from wireguard_dashboard.peers.backend import (
 def test_peer_backend_protocol_conformance(tmp_path: Path) -> None:
     backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
     assert isinstance(backend, PeerBackend)
+    assert hasattr(backend, "get_peer_conf")
+
+
+def test_get_peer_conf_retrieves_exact_content_for_valid_peer(tmp_path: Path) -> None:
+    peer1_dir = tmp_path / "peer1"
+    peer1_dir.mkdir()
+    conf_content = (
+        "[Interface]\n"
+        "Address = 10.13.13.2/32\n"
+        "PrivateKey = SENSITIVE_CLIENT_PRIVATE_KEY_111111111=\n"
+        "DNS = 1.1.1.1\n\n"
+        "[Peer]\n"
+        "PublicKey = SENSITIVE_SERVER_PUBLIC_KEY_AAAAAA=\n"
+        "Endpoint = vpn.example.com:51820\n"
+        "AllowedIPs = 0.0.0.0/0\n"
+    )
+    conf_file = peer1_dir / "peer1.conf"
+    conf_file.write_text(conf_content)
+
+    backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
+    result = backend.get_peer_conf("peer1")
+    assert result == conf_content
+
+    # Verify source file is untouched
+    assert conf_file.read_text() == conf_content
+
+
+def test_get_peer_conf_returns_none_for_missing_or_invalid_peer_id(tmp_path: Path) -> None:
+    backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
+    assert backend.get_peer_conf("peer_nonexistent") is None
+    assert backend.get_peer_conf("peer1") is None
+    assert backend.get_peer_conf("../peer1") is None
+    assert backend.get_peer_conf("peer1/foo") is None
+    assert backend.get_peer_conf("../../etc/shadow") is None
+    assert backend.get_peer_conf("peer_invalid$name") is None
+    assert backend.get_peer_conf("") is None
+
+
+def test_get_peer_conf_rejects_excluded_names_and_server_configs(tmp_path: Path) -> None:
+    server_dir = tmp_path / "server"
+    server_dir.mkdir()
+    (server_dir / "server.conf").write_text("[Interface]\nPrivateKey = SERVER_SECRET\n")
+
+    wg_confs = tmp_path / "wg_confs"
+    wg_confs.mkdir()
+    (wg_confs / "wg0.conf").write_text("[Interface]\nPrivateKey = WG0_SECRET\n")
+
+    backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
+    assert backend.get_peer_conf("server") is None
+    assert backend.get_peer_conf("wg_confs") is None
+    assert backend.get_peer_conf("wg0.conf") is None
+    assert backend.get_peer_conf("templates") is None
+
+
+def test_get_peer_conf_rejects_symlinked_directory_and_file(tmp_path: Path) -> None:
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside_secret = outside_dir / "secret.conf"
+    outside_secret.write_text("[Interface]\nPrivateKey = OUTSIDE_SECRET\n")
+
+    # 1. Symlinked directory
+    symlinked_peer = tmp_path / "peer1"
+    symlinked_peer.symlink_to(outside_dir)
+
+    backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
+    assert backend.get_peer_conf("peer1") is None
+
+    symlinked_peer.unlink()
+
+    # 2. Real directory, symlinked conf file
+    real_peer_dir = tmp_path / "peer1"
+    real_peer_dir.mkdir()
+    symlinked_conf = real_peer_dir / "peer1.conf"
+    symlinked_conf.symlink_to(outside_secret)
+
+    assert backend.get_peer_conf("peer1") is None
+
+
+def test_get_peer_conf_rejects_oversized_configuration(tmp_path: Path) -> None:
+    peer_dir = tmp_path / "peer1"
+    peer_dir.mkdir()
+    oversized = "A" * (65 * 1024)
+    (peer_dir / "peer1.conf").write_text(oversized)
+
+    backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
+    assert backend.get_peer_conf("peer1") is None
+
+
+def test_get_peer_conf_toctou_symlink_replacement_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    peer_dir = tmp_path / "peer1"
+    peer_dir.mkdir()
+    real_conf = peer_dir / "peer1.conf"
+    real_conf.write_text("[Interface]\nAddress = 10.0.0.1\n")
+
+    secret_dir = tmp_path / "secret"
+    secret_dir.mkdir()
+    (secret_dir / "peer1.conf").write_text("[Interface]\nPrivateKey = EXPLOIT\n")
+
+    backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
+
+    # 1. Directory symlink replacement race
+    orig_open = os.open
+
+    def race_open_dir(
+        path: os.PathLike[str] | str | bytes,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == "peer1" and (flags & os.O_NOFOLLOW):
+            # Dynamic race replacement before opening candidate peer dir
+            real_conf.unlink()
+            peer_dir.rmdir()
+            peer_dir.symlink_to(secret_dir)
+        return orig_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", race_open_dir)
+    assert backend.get_peer_conf("peer1") is None
+
+
+def test_get_peer_conf_toctou_conf_file_symlink_replacement_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    peer_dir = tmp_path / "peer1"
+    peer_dir.mkdir()
+    real_conf = peer_dir / "peer1.conf"
+    real_conf.write_text("[Interface]\nAddress = 10.0.0.1\n")
+
+    secret_file = tmp_path / "secret_file.conf"
+    secret_file.write_text("[Interface]\nPrivateKey = FILE_EXPLOIT\n")
+
+    backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
+
+    orig_open = os.open
+
+    def race_open_file(
+        path: os.PathLike[str] | str | bytes,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == "peer1.conf" and (flags & os.O_NOFOLLOW):
+            # Dynamic race replacement before opening candidate peer conf file
+            real_conf.unlink()
+            real_conf.symlink_to(secret_file)
+        return orig_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", race_open_file)
+    assert backend.get_peer_conf("peer1") is None
 
 
 def test_peer_metadata_does_not_have_secret_fields() -> None:

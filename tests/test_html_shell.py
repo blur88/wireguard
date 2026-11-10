@@ -46,6 +46,14 @@ def test_static_stylesheet_served_locally(client: TestClient) -> None:
     assert "--bg-canvas" in response.text
 
 
+def test_static_dashboard_script_served_locally(client: TestClient) -> None:
+    response = client.get("/static/dashboard.js")
+    assert response.status_code == 200
+    assert "javascript" in response.headers["content-type"]
+    assert "initSearchFilter" in response.text
+    assert "validateWireguardConf" in response.text
+
+
 def test_missing_static_dir_fails_fast_at_initialization(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from starlette.testclient import TestClient
 
 from wireguard_dashboard.app import create_app
@@ -277,3 +278,185 @@ def test_auth_disabled_dashboard_and_rescan(tmp_path: Path) -> None:
     res_post = client.post("/rescan", follow_redirects=False)
     assert res_post.status_code == 303
     assert res_post.headers["location"] == "/"
+
+
+def test_peer_conf_endpoint_requires_authentication(tmp_path: Path) -> None:
+    settings = Settings(
+        dashboard_password="password123",
+        session_secret="s" * 32,
+        auth_disabled=False,
+    )
+    app = create_app(settings=settings, peer_backend=ReadOnlyFilesystemBackend(config_dir=tmp_path))
+    client = TestClient(app, base_url="https://testserver")
+
+    # API / fetch call without credentials -> 401 Unauthorized
+    api_resp = client.get("/peers/peer1/conf", headers={"Accept": "text/plain"})
+    assert api_resp.status_code == 401
+    assert api_resp.json() == {"detail": "Unauthorized"}
+
+    # Browser navigation without credentials -> 303 Redirect to /login
+    nav_resp = client.get(
+        "/peers/peer1/conf",
+        headers={"Accept": "text/html"},
+        follow_redirects=False,
+    )
+    assert nav_resp.status_code == 303
+    assert nav_resp.headers["location"] == "/login"
+
+
+def test_peer_conf_endpoint_rejects_revoked_or_tampered_session(tmp_path: Path) -> None:
+    peer_dir = tmp_path / "peer1"
+    peer_dir.mkdir()
+    (peer_dir / "peer1.conf").write_text("[Interface]\nAddress = 10.0.0.1\n")
+
+    client, csrf_token = _create_authenticated_client(config_dir=tmp_path)
+
+    # 1. Tampered session
+    client.cookies.set(SESSION_COOKIE_NAME, "tampered_session_cookie")
+    res_tampered = client.get("/peers/peer1/conf", headers={"Accept": "text/plain"})
+    assert res_tampered.status_code == 401
+
+    # 2. Re-login and logout (revoking session)
+    client2, csrf_token2 = _create_authenticated_client(config_dir=tmp_path)
+    res_logout = client2.post("/logout", data={"csrf_token": csrf_token2}, follow_redirects=False)
+    assert res_logout.status_code == 303
+
+    res_revoked = client2.get("/peers/peer1/conf", headers={"Accept": "text/plain"})
+    assert res_revoked.status_code == 401
+
+
+def test_peer_conf_endpoint_returns_exact_conf_and_headers(tmp_path: Path) -> None:
+    peer_dir = tmp_path / "peer1"
+    peer_dir.mkdir()
+    conf_content = (
+        "[Interface]\n"
+        "Address = 10.13.13.2/32\n"
+        "PrivateKey = SENSITIVE_CLIENT_PRIVATE_KEY_CONF_ENDPOINT=\n"
+        "DNS = 1.1.1.1\n\n"
+        "[Peer]\n"
+        "PublicKey = SENSITIVE_SERVER_PUBLIC_KEY=\n"
+        "Endpoint = vpn.example.com:51820\n"
+    )
+    (peer_dir / "peer1.conf").write_text(conf_content)
+
+    client, _ = _create_authenticated_client(config_dir=tmp_path)
+    response = client.get("/peers/peer1/conf")
+
+    assert response.status_code == 200
+    assert response.text == conf_content
+    # Strict headers
+    assert response.headers["Content-Disposition"] == 'attachment; filename="peer1.conf"'
+    assert "no-store" in response.headers["Cache-Control"]
+    assert "text/plain" in response.headers["Content-Type"]
+
+
+def test_peer_conf_endpoint_returns_404_for_unknown_or_malicious_peers(tmp_path: Path) -> None:
+    server_dir = tmp_path / "server"
+    server_dir.mkdir()
+    (server_dir / "server.conf").write_text("[Interface]\nPrivateKey = SERVER_ROOT_SECRET\n")
+
+    client, _ = _create_authenticated_client(config_dir=tmp_path)
+
+    # Non-existent peer
+    res_missing = client.get("/peers/peer99/conf")
+    assert res_missing.status_code == 404
+    assert res_missing.json() == {"detail": "Peer not found"}
+
+    # Excluded server directory
+    res_server = client.get("/peers/server/conf")
+    assert res_server.status_code == 404
+
+    # Traversal attempts
+    res_traversal = client.get("/peers/..%2Fserver/conf")
+    assert res_traversal.status_code == 404
+
+
+def test_peer_conf_endpoint_never_logs_secrets_or_response_bodies(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    peer_dir = tmp_path / "peer1"
+    peer_dir.mkdir()
+    secret_key = "HIGHLY_CONFIDENTIAL_PRIVATE_KEY_VAL="
+    conf_content = f"[Interface]\nAddress = 10.13.13.2/32\nPrivateKey = {secret_key}\n"
+    (peer_dir / "peer1.conf").write_text(conf_content)
+
+    client, _ = _create_authenticated_client(config_dir=tmp_path)
+
+    with caplog.at_level(logging.DEBUG):
+        response = client.get("/peers/peer1/conf")
+        assert response.status_code == 200
+
+    # Ensure secrets are never logged
+    for record in caplog.records:
+        assert secret_key not in record.getMessage()
+        assert "PrivateKey" not in record.getMessage()
+
+
+def test_peer_conf_endpoint_with_auth_disabled(tmp_path: Path) -> None:
+    peer_dir = tmp_path / "peer1"
+    peer_dir.mkdir()
+    (peer_dir / "peer1.conf").write_text("[Interface]\nAddress = 10.0.0.1\n")
+
+    settings = Settings(auth_disabled=True)
+    backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
+    app = create_app(settings=settings, peer_backend=backend)
+    client = TestClient(app, base_url="http://testserver")
+
+    response = client.get("/peers/peer1/conf")
+    assert response.status_code == 200
+    assert response.headers["Content-Disposition"] == 'attachment; filename="peer1.conf"'
+    assert "no-store" in response.headers["Cache-Control"]
+
+
+def test_dashboard_template_renders_search_and_masked_actions_no_leak(
+    tmp_path: Path,
+) -> None:
+    peer_dir = tmp_path / "peer1"
+    peer_dir.mkdir()
+    conf_content = (
+        "[Interface]\n"
+        "Address = 10.13.13.2/32\n"
+        "PrivateKey = CLASSIFIED_CLIENT_PRIVATE_KEY_NEVER_LEAK_IN_HTML==\n"
+        "DNS = 1.1.1.1\n\n"
+        "[Peer]\n"
+        "PublicKey = CLASSIFIED_SERVER_PUBLIC_KEY==\n"
+        "PresharedKey = CLASSIFIED_PRESHARED_KEY==\n"
+        "Endpoint = vpn.example.com:51820\n"
+    )
+    (peer_dir / "peer1.conf").write_text(conf_content)
+
+    client, _ = _create_authenticated_client(config_dir=tmp_path)
+    response = client.get("/")
+    assert response.status_code == 200
+    html = response.text
+
+    # 1. Search input is present with proper accessibility attributes
+    assert 'id="peer-search"' in html
+    assert 'type="search"' in html or 'type="text"' in html
+    assert "placeholder=" in html
+
+    # 2. Peer card has data attributes for client-side filtering
+    assert 'data-peer-name="peer1"' in html
+    assert 'data-peer-ip="10.13.13.2/32"' in html
+    assert 'data-peer-id="peer1"' in html
+
+    # 3. Masked preview structure and security warning
+    assert "Sensitive Configuration" in html or "warning" in html.lower()
+    assert "conf-masked-placeholder" in html
+    assert "••••" in html
+    assert 'class="btn-action btn-reveal"' in html or "btn-reveal" in html
+    assert "btn-copy" in html
+    assert "btn-download" in html or "download" in html
+    assert 'href="/peers/peer1/conf"' in html
+
+    # 4. Strict check: No inline scripts, JS is loaded via local static script
+    assert '<script src="/static/dashboard.js"' in html
+    assert "<script>" not in html
+
+    # 5. ABSOLUTE SECURITY GUARANTEE: No secret keys or configuration content in initial HTML
+    assert "CLASSIFIED" not in html
+    assert "PrivateKey" not in html
+    assert "PresharedKey" not in html
+    assert "AllowedIPs" not in html

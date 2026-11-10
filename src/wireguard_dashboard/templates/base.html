@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="dark">
   <title>{% block title %}WireGuard Companion Dashboard{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/dashboard.js" defer></script>
   {% block head_extra %}{% endblock %}
 </head>
 <body>
@@ -33,14 +34,38 @@
     {% block content %}
     {% if peers and peers|length > 0 %}
     <div class="section-header">
-      <div>
+      <div class="section-title-group">
         <h1 class="page-title">Configured Peers</h1>
         <p class="section-subtitle">Discovered {{ peers|length }} recognized WireGuard peer{{ 's' if peers|length != 1 else '' }} in read-only mode.</p>
       </div>
+      <div class="search-container">
+        <label for="peer-search" class="visually-hidden">Filter peers by name or assigned IP</label>
+        <div class="search-input-wrapper">
+          <span class="search-icon" aria-hidden="true">🔍</span>
+          <input
+            type="search"
+            id="peer-search"
+            class="search-input"
+            placeholder="Filter peers by name or IP..."
+            aria-label="Filter peers by name or assigned IP"
+            autocomplete="off"
+            spellcheck="false"
+          >
+          <button type="button" id="clear-search-btn" class="clear-search-btn hidden" aria-label="Clear search">&times;</button>
+        </div>
+      </div>
+    </div>
+    <div id="no-search-results" class="no-search-results hidden" role="status">
+      <p>No peers match your search query.</p>
     </div>
     <div class="peer-grid">
       {% for item in peers %}
-      <div class="peer-card">
+      <div
+        class="peer-card"
+        data-peer-id="{{ item.meta.peer_id }}"
+        data-peer-name="{{ item.meta.friendly_name|lower }}"
+        data-peer-ip="{{ item.meta.address|lower if item.meta.address else '' }}"
+      >
         <div class="peer-card-header">
           <div class="peer-ident">
             <h2 class="peer-name">{{ item.meta.friendly_name }}</h2>
@@ -69,6 +94,48 @@
             <span class="detail-label">Transfer</span>
             <span class="detail-value telemetry-unavailable">Rx: {{ item.telemetry.transfer_rx }} / Tx: {{ item.telemetry.transfer_tx }}</span>
           </div>
+        </div>
+        <div class="peer-actions">
+          <button
+            type="button"
+            class="btn-action btn-reveal"
+            data-peer-id="{{ item.meta.peer_id }}"
+            aria-expanded="false"
+            aria-controls="conf-wrapper-{{ item.meta.peer_id }}"
+          >
+            Reveal Configuration
+          </button>
+          <button
+            type="button"
+            class="btn-action btn-copy"
+            data-peer-id="{{ item.meta.peer_id }}"
+            title="Copy configuration to clipboard"
+          >
+            Copy
+          </button>
+          <a
+            href="/peers/{{ item.meta.peer_id }}/conf"
+            download="{{ item.meta.peer_id }}.conf"
+            class="btn-action btn-download"
+            title="Download .conf file directly"
+          >
+            Download .conf
+          </a>
+        </div>
+        <div
+          class="conf-preview-wrapper"
+          id="conf-wrapper-{{ item.meta.peer_id }}"
+          role="region"
+          aria-label="Configuration for {{ item.meta.friendly_name }}"
+        >
+          <div class="conf-warning-banner" role="alert">
+            <span class="warning-icon" aria-hidden="true">⚠️</span>
+            <span class="warning-text">Sensitive Configuration: Contains private key. Do not share or expose.</span>
+          </div>
+          <div class="conf-masked-placeholder" id="conf-masked-{{ item.meta.peer_id }}" aria-hidden="true">
+            ••••••••••••••••••••••••••••••••••••••••<br>••••••••••••••••••••••••••••••••••••••••<br>••••••••••••••••••••••••••••••••••••••••
+          </div>
+          <pre class="conf-code-block hidden"><code id="conf-code-{{ item.meta.peer_id }}" class="conf-code"></code></pre>
         </div>
       </div>
       {% endfor %}
