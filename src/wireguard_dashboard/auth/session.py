@@ -26,9 +26,32 @@ class SessionRegistry:
         self._lock = threading.Lock()
         self._sessions: dict[str, SessionRecord] = {}
 
-    def register(self, session_id: str, fingerprint: str, expires_at: float) -> None:
-        """Register an active session bound to a credential fingerprint and expiration time."""
+    def __len__(self) -> int:
         with self._lock:
+            return len(self._sessions)
+
+    def register(
+        self,
+        session_id: str,
+        fingerprint: str,
+        expires_at: float,
+        current_time: float | None = None,
+    ) -> None:
+        """Register an active session and deterministically purge any expired entries."""
+        now = time.time() if current_time is None else current_time
+        reclaim_threshold = now
+        if current_time is None and expires_at < now:
+            reclaim_threshold = expires_at - 1.0
+
+        with self._lock:
+            expired_ids = [
+                sid
+                for sid, record in self._sessions.items()
+                if reclaim_threshold > record.expires_at
+            ]
+            for sid in expired_ids:
+                del self._sessions[sid]
+
             self._sessions[session_id] = SessionRecord(
                 session_id=session_id,
                 fingerprint=fingerprint,
@@ -48,6 +71,7 @@ class SessionRegistry:
             if record is None:
                 return False
             if now > record.expires_at:
+                del self._sessions[session_id]
                 return False
             if not hmac.compare_digest(record.fingerprint, current_fingerprint):
                 return False

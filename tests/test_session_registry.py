@@ -26,20 +26,20 @@ def test_unknown_session_id_is_rejected() -> None:
 
 def test_expired_session_rejection_and_cleanup() -> None:
     registry = SessionRegistry()
-    registry.register("session-1", "fp-123", expires_at=100.0)
-    registry.register("session-2", "fp-123", expires_at=200.0)
+    registry.register("session-1", "fp-123", expires_at=100.0, current_time=50.0)
+    registry.register("session-2", "fp-123", expires_at=200.0, current_time=50.0)
 
-    # At time 150: session-1 is expired, session-2 is still valid
-    assert not registry.is_active("session-1", "fp-123", current_time=150.0)
-    assert registry.is_active("session-2", "fp-123", current_time=150.0)
-
-    # Calling cleanup_expired removes expired sessions
+    # Calling cleanup_expired at time 150 removes session-1
     cleaned = registry.cleanup_expired(current_time=150.0)
     assert cleaned == 1
 
-    # At time 250: session-2 is also expired
+    # At time 150: session-1 is gone, session-2 is still valid
+    assert not registry.is_active("session-1", "fp-123", current_time=150.0)
+    assert registry.is_active("session-2", "fp-123", current_time=150.0)
+
+    # At time 250: session-2 is also expired; is_active rejects and lazily cleans it
     assert not registry.is_active("session-2", "fp-123", current_time=250.0)
-    assert registry.cleanup_expired(current_time=250.0) == 1
+    assert len(registry) == 0
 
 
 def test_immediate_single_session_revocation() -> None:
@@ -121,3 +121,39 @@ def test_registry_isolation_between_instances() -> None:
     assert registry_a.is_active("session-app-a", "fp-123", current_time=500.0)
     # Not active in B (instance isolation)
     assert not registry_b.is_active("session-app-a", "fp-123", current_time=500.0)
+
+
+def test_lazy_cleanup_on_is_active_access() -> None:
+    registry = SessionRegistry()
+    registry.register("session-1", "fp-123", expires_at=100.0)
+    assert len(registry) == 1
+
+    # Accessing before expiration does not remove it
+    assert registry.is_active("session-1", "fp-123", current_time=50.0)
+    assert len(registry) == 1
+
+    # Accessing after expiration returns False and removes it from memory
+    assert not registry.is_active("session-1", "fp-123", current_time=150.0)
+    assert len(registry) == 0
+
+
+def test_lazy_cleanup_on_new_session_registration() -> None:
+    registry = SessionRegistry()
+    # Register 3 sessions expiring at time 100
+    registry.register("session-1", "fp-123", expires_at=100.0, current_time=10.0)
+    registry.register("session-2", "fp-123", expires_at=100.0, current_time=10.0)
+    registry.register("session-3", "fp-123", expires_at=500.0, current_time=10.0)
+    assert len(registry) == 3
+
+    # At time 200, register a new session (without any explicit cleanup call)
+    # Registration lazily purges session-1 and session-2, retaining session-3 and new one
+    registry.register("session-4", "fp-123", expires_at=600.0, current_time=200.0)
+    assert len(registry) == 2
+
+    # Verify session-1 and session-2 are gone
+    assert not registry.is_active("session-1", "fp-123", current_time=200.0)
+    assert not registry.is_active("session-2", "fp-123", current_time=200.0)
+
+    # Verify session-3 and session-4 remain valid and active
+    assert registry.is_active("session-3", "fp-123", current_time=200.0)
+    assert registry.is_active("session-4", "fp-123", current_time=200.0)
