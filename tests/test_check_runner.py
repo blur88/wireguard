@@ -41,6 +41,13 @@ def setup_fake_runner_env(
     return runner, log_file, sandbox_root
 
 
+def _read_calls(log_file: Path) -> list[str]:
+    """Read and strip recorded invocation lines from a log file."""
+    if not log_file.exists():
+        return []
+    return [line.strip() for line in log_file.read_text().splitlines() if line.strip()]
+
+
 def test_check_script_exists_and_is_executable() -> None:
     """Ensure scripts/check.sh exists and has execute permissions."""
     assert CHECK_SCRIPT.is_file(), f"Expected check runner script at {CHECK_SCRIPT}"
@@ -111,7 +118,7 @@ def test_check_script_fix_executes_expected_sequence_and_excludes_container(
     )
     assert res.returncode == 0, f"Script failed with output:\n{res.stdout}\n{res.stderr}"
 
-    recorded_calls = [line.strip() for line in log_file.read_text().splitlines() if line.strip()]
+    recorded_calls = _read_calls(log_file)
 
     expected_sequence = [
         "ruff check --fix .",
@@ -139,7 +146,7 @@ def test_check_script_default_and_full_are_strictly_read_only(
         text=True,
     )
     assert res_default.returncode == 0, res_default.stderr
-    default_calls = [line.strip() for line in log_file.read_text().splitlines() if line.strip()]
+    default_calls = _read_calls(log_file)
     assert "ruff check --fix ." not in default_calls
     assert "ruff format ." not in default_calls
     assert default_calls == [
@@ -160,7 +167,7 @@ def test_check_script_default_and_full_are_strictly_read_only(
         text=True,
     )
     assert res_full.returncode == 0, res_full.stderr
-    full_calls = [line.strip() for line in log_file.read_text().splitlines() if line.strip()]
+    full_calls = _read_calls(log_file)
     assert "ruff check --fix ." not in full_calls
     assert "ruff format ." not in full_calls
     assert full_calls == [
@@ -187,13 +194,26 @@ def test_check_script_default_and_full_are_strictly_read_only(
                 "mypy src tests --strict",
             ],
         ),
+        (
+            "pytest",
+            [
+                "ruff check --fix .",
+                "ruff format .",
+                "ruff check .",
+                "ruff format --check .",
+                "mypy src tests --strict",
+                "pytest -m not container -v",
+            ],
+        ),
     ],
 )
 def test_check_script_fail_fast_preserves_exit_code_and_aborts_early(
     tmp_path: Path, failing_tool: str, expected_executed_calls: list[str]
 ) -> None:
     """Ensure check.sh --fix halts immediately with non-zero exit code upon any step failure."""
-    log_file = tmp_path / "invocations.log"
+    sandbox_root = tmp_path / "sandbox"
+    log_file = sandbox_root / "invocations.log"
+
     ruff_script = (
         "#!/bin/sh\n"
         f'echo "$(basename "$0") $*" >> "{log_file}"\n'
@@ -215,10 +235,16 @@ def test_check_script_fail_fast_preserves_exit_code_and_aborts_early(
         'if [ "' + failing_tool + '" = "mypy" ]; then exit 1; fi\n'
         "exit 0\n"
     )
+    pytest_script = (
+        "#!/bin/sh\n"
+        f'echo "$(basename "$0") $*" >> "{log_file}"\n'
+        'if [ "' + failing_tool + '" = "pytest" ]; then exit 1; fi\n'
+        "exit 0\n"
+    )
 
-    runner, _, sandbox_root = setup_fake_runner_env(
+    runner, runner_log, _ = setup_fake_runner_env(
         tmp_path,
-        tool_overrides={"ruff": ruff_script, "mypy": mypy_script},
+        tool_overrides={"ruff": ruff_script, "mypy": mypy_script, "pytest": pytest_script},
     )
 
     res = subprocess.run(
@@ -228,5 +254,4 @@ def test_check_script_fail_fast_preserves_exit_code_and_aborts_early(
         text=True,
     )
     assert res.returncode == 1
-    recorded_calls = [line.strip() for line in log_file.read_text().splitlines() if line.strip()]
-    assert recorded_calls == expected_executed_calls
+    assert _read_calls(runner_log) == expected_executed_calls
