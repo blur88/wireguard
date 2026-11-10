@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}Login &middot; WireGuard Companion Dashboard{% endblock %}
+
+{% block content %}
+<div class="login-card">
+  <h1 class="login-title">Admin Login</h1>
+  <p class="login-subtitle">Enter your master password to access the companion dashboard.</p>
+
+  {% if error %}
+  <div class="alert-error" role="alert">
+    {{ error }}
+  </div>
+  {% endif %}
+
+  <form method="POST" action="/login">
+    <div class="form-group">
+      <label for="password" class="form-label">Password</label>
+      <input
+        type="password"
+        id="password"
+        name="password"
+        class="form-input"
+        required
+        autocomplete="current-password"
+        autofocus
+      >
+    </div>
+    <button type="submit" class="btn-primary">Sign In</button>
+  </form>
+</div>
+{% endblock %}
