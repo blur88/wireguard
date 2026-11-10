@@ -14,19 +14,86 @@
       <span>🛡️ WireGuard Companion</span>
       <span class="badge">Read-Only</span>
     </div>
-    {% if csrf_token %}
-    <form method="POST" action="/logout" class="logout-form">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit" class="btn-logout">Logout</button>
-    </form>
-    {% endif %}
+    <div class="header-actions">
+      <form method="POST" action="/rescan" class="header-form">
+        {% if csrf_token %}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% endif %}
+        <button type="submit" class="btn-secondary">Rescan</button>
+      </form>
+      {% if csrf_token %}
+      <form method="POST" action="/logout" class="header-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn-logout">Logout</button>
+      </form>
+      {% endif %}
+    </div>
   </header>
   <main>
     {% block content %}
-    <div class="card">
-      <h1 class="card-title">WireGuard Dashboard</h1>
-      <p class="card-description">Companion service running and healthy.</p>
+    {% if peers and peers|length > 0 %}
+    <div class="section-header">
+      <div>
+        <h1 class="page-title">Configured Peers</h1>
+        <p class="section-subtitle">Discovered {{ peers|length }} recognized WireGuard peer{{ 's' if peers|length != 1 else '' }} in read-only mode.</p>
+      </div>
     </div>
+    <div class="peer-grid">
+      {% for item in peers %}
+      <div class="peer-card">
+        <div class="peer-card-header">
+          <div class="peer-ident">
+            <h2 class="peer-name">{{ item.meta.friendly_name }}</h2>
+            <span class="peer-id-badge">{{ item.meta.peer_id }}</span>
+          </div>
+          <span class="badge badge-telemetry badge-unavailable" title="Live telemetry requires elevated kernel privileges not held by the companion container.">{{ item.telemetry.status_label }}</span>
+        </div>
+        <div class="peer-details">
+          <div class="detail-row">
+            <span class="detail-label">Assigned IP</span>
+            <span class="detail-value">{{ item.meta.address or "Not configured" }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">DNS</span>
+            <span class="detail-value">{{ item.meta.dns or "Not configured" }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Endpoint</span>
+            <span class="detail-value">{{ item.meta.endpoint or "Not configured" }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Latest Handshake</span>
+            <span class="detail-value telemetry-unavailable">{{ item.telemetry.latest_handshake }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Transfer</span>
+            <span class="detail-value telemetry-unavailable">Rx: {{ item.telemetry.transfer_rx }} / Tx: {{ item.telemetry.transfer_tx }}</span>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state-card">
+      <div class="empty-icon">🔍</div>
+      <h1 class="empty-title">No Peers Found</h1>
+      <p class="empty-description">
+        No recognized WireGuard peer directories were found under <code>/config</code>.
+      </p>
+      <div class="empty-guidance">
+        <h3>How to configure peers in LinuxServer WireGuard:</h3>
+        <p>
+          Configure the <code>PEERS</code> environment variable on your LinuxServer WireGuard container (e.g. <code>PEERS=1</code> or <code>PEERS=phone,laptop</code>) and restart that container to generate peer directories.
+        </p>
+      </div>
+      <form method="POST" action="/rescan" class="empty-rescan-form">
+        {% if csrf_token %}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% endif %}
+        <button type="submit" class="btn-primary">Rescan Directory</button>
+      </form>
+    </div>
+    {% endif %}
     {% endblock %}
   </main>
   <footer>
