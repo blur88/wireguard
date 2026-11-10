@@ -20,3 +20,13 @@ Security-sensitive decisions must never rely on untrusted reverse-proxy forwardi
 - Reverse-proxy TLS termination must use explicitly trusted proxy configuration rather than blind header inheritance.
 - Development-only insecure cookie settings must require explicit opt-in (e.g., `COOKIE_SECURE=false`) and must never become the default production behavior.
 
+## Centralized CSRF Request Validation Reuse
+
+New state-changing HTTP endpoints (POST, PUT, DELETE, PATCH) must reuse the application's centralized CSRF validation mechanism (`_validate_csrf_request()`) rather than duplicating cookie, form, header, and HMAC verification logic:
+- **Separation of Tokens**: Maintain strict separation between pre-authentication CSRF tokens (bound to pre-auth nonces) and authenticated session-bound CSRF tokens (bound to active session IDs).
+- **Double-Submit Enforcement**: Validate that submitted form (`csrf_token`) or header (`X-CSRF-Token`) tokens match the active `wg_dashboard_csrf` cookie and satisfy HMAC signature checks.
+- **Fail Closed**: Missing, mismatched, tampered, or cross-session CSRF tokens must return HTTP 403 Forbidden.
+- **AUTH_DISABLED Policy**: Maintain consistent bypass behavior under `AUTH_DISABLED=true` without weakening CSRF protections when authentication is enabled.
+- **Read-Only Exemption**: Safe, idempotent read-only GET endpoints must not require CSRF tokens.
+
+

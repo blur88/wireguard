@@ -17,7 +17,7 @@ def _create_authenticated_client(
     config_dir: Path,
     password: str = "correct_password",
     session_secret: str = "a" * 32,
-) -> tuple[TestClient, dict[str, str], str]:
+) -> tuple[TestClient, str]:
     settings = Settings(
         dashboard_password=password,
         session_secret=session_secret,
@@ -28,29 +28,24 @@ def _create_authenticated_client(
     app = create_app(settings=settings, peer_backend=backend)
     client = TestClient(app, base_url="https://testserver")
 
-    # Log in through the standard flow to get valid session and CSRF cookies
-    login_get = client.get("/login")
-    login_csrf = login_get.cookies.get(CSRF_COOKIE_NAME)
+    # Log in through the standard flow to get valid session and CSRF cookies in the jar
+    client.get("/login")
+    login_csrf = client.cookies.get(CSRF_COOKIE_NAME)
     assert login_csrf is not None
 
     login_post = client.post(
         "/login",
         data={"password": password, CSRF_FORM_FIELD: login_csrf},
-        cookies={CSRF_COOKIE_NAME: login_csrf},
         follow_redirects=False,
     )
     assert login_post.status_code == 303
 
-    session_cookie = login_post.cookies.get(SESSION_COOKIE_NAME)
-    session_csrf = login_post.cookies.get(CSRF_COOKIE_NAME)
+    session_cookie = client.cookies.get(SESSION_COOKIE_NAME)
+    session_csrf = client.cookies.get(CSRF_COOKIE_NAME)
     assert session_cookie is not None
     assert session_csrf is not None
 
-    cookies = {
-        SESSION_COOKIE_NAME: session_cookie,
-        CSRF_COOKIE_NAME: session_csrf,
-    }
-    return client, cookies, session_csrf
+    return client, session_csrf
 
 
 def test_dashboard_unauthenticated_redirects_to_login(tmp_path: Path) -> None:
@@ -81,8 +76,8 @@ def test_dashboard_renders_discovered_peer_cards_and_telemetry_unavailable(tmp_p
         "Endpoint = vpn.example.com:51820\n"
     )
 
-    client, cookies, _ = _create_authenticated_client(config_dir=tmp_path)
-    response = client.get("/", cookies=cookies)
+    client, _ = _create_authenticated_client(config_dir=tmp_path)
+    response = client.get("/")
 
     assert response.status_code == 200
     html = response.text
@@ -113,8 +108,8 @@ def test_dashboard_escapes_malicious_peer_content(tmp_path: Path) -> None:
         "[Interface]\nAddress = <script>alert('xss')</script>\nDNS = <img src=x onerror=alert(1)>\n"
     )
 
-    client, cookies, _ = _create_authenticated_client(config_dir=tmp_path)
-    response = client.get("/", cookies=cookies)
+    client, _ = _create_authenticated_client(config_dir=tmp_path)
+    response = client.get("/")
 
     assert response.status_code == 200
     html = response.text
@@ -127,8 +122,8 @@ def test_dashboard_escapes_malicious_peer_content(tmp_path: Path) -> None:
 
 def test_dashboard_empty_state_shows_guidance_and_rescan(tmp_path: Path) -> None:
     # Empty directory
-    client, cookies, csrf_token = _create_authenticated_client(config_dir=tmp_path)
-    response = client.get("/", cookies=cookies)
+    client, csrf_token = _create_authenticated_client(config_dir=tmp_path)
+    response = client.get("/")
 
     assert response.status_code == 200
     html = response.text
@@ -153,17 +148,17 @@ def test_rescan_requires_authentication(tmp_path: Path) -> None:
 
 
 def test_rescan_requires_valid_csrf(tmp_path: Path) -> None:
-    client, cookies, csrf_token = _create_authenticated_client(config_dir=tmp_path)
-
-    # 1. Missing CSRF
-    res_missing = client.post("/rescan", cookies=cookies)
+    # 1. Missing CSRF (no cookie and no form token)
+    client_missing, _ = _create_authenticated_client(config_dir=tmp_path)
+    client_missing.cookies.delete(CSRF_COOKIE_NAME)
+    res_missing = client_missing.post("/rescan")
     assert res_missing.status_code == 403
 
     # 2. Tampered CSRF
-    res_tampered = client.post(
+    client_tampered, _ = _create_authenticated_client(config_dir=tmp_path)
+    res_tampered = client_tampered.post(
         "/rescan",
         data={"csrf_token": "tampered_token"},
-        cookies=cookies,
     )
     assert res_tampered.status_code == 403
 
@@ -172,18 +167,18 @@ def test_rescan_requires_valid_csrf(tmp_path: Path) -> None:
         session_id="other_session_id",
         session_secret="a" * 32,
     )
-    res_cross = client.post(
+    client_cross, _ = _create_authenticated_client(config_dir=tmp_path)
+    res_cross = client_cross.post(
         "/rescan",
         data={"csrf_token": other_session_csrf},
-        cookies=cookies,
     )
     assert res_cross.status_code == 403
 
     # 4. Valid CSRF
-    res_valid = client.post(
+    client_valid, csrf_token = _create_authenticated_client(config_dir=tmp_path)
+    res_valid = client_valid.post(
         "/rescan",
         data={"csrf_token": csrf_token},
-        cookies=cookies,
         follow_redirects=False,
     )
     assert res_valid.status_code == 303
@@ -191,10 +186,10 @@ def test_rescan_requires_valid_csrf(tmp_path: Path) -> None:
 
 
 def test_rescan_reflects_newly_added_peer_without_modifying_files(tmp_path: Path) -> None:
-    client, cookies, csrf_token = _create_authenticated_client(config_dir=tmp_path)
+    client, csrf_token = _create_authenticated_client(config_dir=tmp_path)
 
     # Initially empty
-    res1 = client.get("/", cookies=cookies)
+    res1 = client.get("/")
     assert "No Peers Found" in res1.text
     assert "peer1" not in res1.text
 
@@ -210,13 +205,12 @@ def test_rescan_reflects_newly_added_peer_without_modifying_files(tmp_path: Path
     res_post = client.post(
         "/rescan",
         data={"csrf_token": csrf_token},
-        cookies=cookies,
         follow_redirects=False,
     )
     assert res_post.status_code == 303
 
     # Now peer1 appears
-    res2 = client.get("/", cookies=cookies)
+    res2 = client.get("/")
     assert "peer1" in res2.text
     assert "10.13.13.2/32" in res2.text
     assert "No Peers Found" not in res2.text
@@ -239,11 +233,10 @@ def test_rescan_json_api_response(tmp_path: Path) -> None:
         "Endpoint = vpn.example.com:51820\n"
     )
 
-    client, cookies, csrf_token = _create_authenticated_client(config_dir=tmp_path)
+    client, csrf_token = _create_authenticated_client(config_dir=tmp_path)
     response = client.post(
         "/rescan",
         headers={"Accept": "application/json", "X-CSRF-Token": csrf_token},
-        cookies=cookies,
     )
     assert response.status_code == 200
     data = response.json()

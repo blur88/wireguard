@@ -18,9 +18,9 @@ Five-category finding classification (`blocking`, `non-blocking`, `accepted`, `d
 
 ### Verification
 
-During red-green TDD, prefer focused pytest execution for rapid feedback. After completing an implementation slice, run the fast repository checks. Use `--fix` only when automatic source modifications are explicitly intended. Run `--full` before PR creation and merge.
+During red-green TDD, prefer focused pytest execution using the repository virtual environment (e.g., `.venv/bin/pytest tests/test_peer_discovery.py -q`) for rapid feedback. After completing an implementation slice, run the fast repository checks. Use `--fix` only when automatic source modifications are explicitly intended. Run `--full` before PR creation and merge.
 
 Preferred workflow:
-1. Focused pytest during red-green iteration.
+1. Focused pytest via `.venv/bin/pytest <test_file> -q` during red-green iteration.
 2. `./scripts/check.sh` for read-only fast verification (lint, format, strict typechecking, fast unit/HTTP tests), or `--fix` when explicitly authorized.
 3. `./scripts/check.sh --full` for complete verification (includes Docker container integration tests) before PR preparation and merge; fast verification must not be represented as full verification.
