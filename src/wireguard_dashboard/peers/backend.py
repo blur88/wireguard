@@ -127,7 +127,7 @@ class ReadOnlyFilesystemBackend:
             entries = os.listdir(base_fd)
             for entry in entries:
                 # 1. Name validation and explicit exclusion check
-                if entry in EXCLUDED_NAMES or not PEER_PATTERN.match(entry):
+                if entry in EXCLUDED_NAMES or not PEER_PATTERN.fullmatch(entry):
                     continue
 
                 sub_fd: int | None = None
@@ -216,7 +216,7 @@ class ReadOnlyFilesystemBackend:
 
     def get_peer_conf(self, peer_id: str) -> str | None:
         """Retrieve raw configuration content for a peer on demand descriptor-relatively."""
-        if not peer_id or peer_id in EXCLUDED_NAMES or not PEER_PATTERN.match(peer_id):
+        if not peer_id or peer_id in EXCLUDED_NAMES or not PEER_PATTERN.fullmatch(peer_id):
             return None
 
         if not self.config_dir.is_dir():

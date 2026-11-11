@@ -49,6 +49,8 @@ def test_get_peer_conf_returns_none_for_missing_or_invalid_peer_id(tmp_path: Pat
     assert backend.get_peer_conf("peer1/foo") is None
     assert backend.get_peer_conf("../../etc/shadow") is None
     assert backend.get_peer_conf("peer_invalid$name") is None
+    assert backend.get_peer_conf("peer1\n") is None
+    assert backend.get_peer_conf("peer_phone\n") is None
     assert backend.get_peer_conf("") is None
 
 
@@ -272,6 +274,31 @@ def test_discovery_explicitly_excludes_server_and_unrelated_directories(tmp_path
     peers = backend.list_peers()
     assert len(peers) == 1
     assert peers[0].peer_id == "peer1"
+
+
+def test_discovery_and_conf_reject_peer_with_trailing_newline(tmp_path: Path) -> None:
+    # Directory with trailing newline
+    newline_dir = tmp_path / "peer1\n"
+    newline_dir.mkdir()
+    (newline_dir / "peer1\n.conf").write_text("[Interface]\nAddress = 10.13.13.2/32\n")
+
+    # Valid peer directory alongside
+    valid_dir = tmp_path / "peer1"
+    valid_dir.mkdir()
+    (valid_dir / "peer1.conf").write_text("[Interface]\nAddress = 10.13.13.3/32\n")
+
+    backend = ReadOnlyFilesystemBackend(config_dir=tmp_path)
+    peers = backend.list_peers()
+
+    # Discovery must reject directory with trailing newline and only list valid peer
+    assert len(peers) == 1
+    assert peers[0].peer_id == "peer1"
+
+    # get_peer_conf must reject trailing newline peer_ids
+    assert backend.get_peer_conf("peer1\n") is None
+    assert backend.get_peer_conf("peer_phone\n") is None
+    # Valid peer configuration is still retrievable
+    assert backend.get_peer_conf("peer1") == "[Interface]\nAddress = 10.13.13.3/32\n"
 
 
 def test_discovery_rejects_symlink_peer_directory(tmp_path: Path) -> None:

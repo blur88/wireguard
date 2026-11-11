@@ -370,6 +370,10 @@ def test_peer_conf_endpoint_returns_404_for_unknown_or_malicious_peers(tmp_path:
     res_traversal = client.get("/peers/..%2Fserver/conf")
     assert res_traversal.status_code == 404
 
+    # Trailing newline attempt
+    res_newline = client.get("/peers/peer1%0A/conf")
+    assert res_newline.status_code == 404
+
 
 def test_peer_conf_endpoint_never_logs_secrets_or_response_bodies(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
