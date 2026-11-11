@@ -455,7 +455,6 @@ def test_browser_search_filter_without_network_requests(tmp_path: Path) -> None:
             await browser.wait_for_condition(
                 f"document.querySelector('{sel_p1}').classList.contains('card-hidden') && "
                 f"!document.querySelector('{sel_lap}').classList.contains('card-hidden')",
-                timeout=5.0,
                 description="peer1 hidden and peer_laptop visible after search 'laptop'",
             )
 
@@ -471,7 +470,6 @@ def test_browser_search_filter_without_network_requests(tmp_path: Path) -> None:
             await browser.wait_for_condition(
                 f"!document.querySelector('{sel_p1}').classList.contains('card-hidden') && "
                 f"document.querySelector('{sel_lap}').classList.contains('card-hidden')",
-                timeout=5.0,
                 description="peer1 visible and peer_laptop hidden after search '10.13.13.2'",
             )
 
@@ -584,7 +582,6 @@ def test_browser_clipboard_copy_success_and_failure_feedback(tmp_path: Path) -> 
 
             await browser.wait_for_condition(
                 "Boolean(window.__copiedText && window.__copiedText.includes('COPY_SECRET=='))",
-                timeout=5.0,
                 description="clipboard text copied",
             )
             copied_text = await browser.evaluate("window.__copiedText")
@@ -612,7 +609,6 @@ def test_browser_clipboard_copy_success_and_failure_feedback(tmp_path: Path) -> 
             )
             await browser.wait_for_condition(
                 failed_expr,
-                timeout=5.0,
                 description="failed copy button text",
             )
 
