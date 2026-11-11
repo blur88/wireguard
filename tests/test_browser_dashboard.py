@@ -523,7 +523,6 @@ def test_browser_reveal_configuration_explicit_action_and_safe_rendering(tmp_pat
             # Wait for on-demand fetch and rendering
             await browser.wait_for_condition(
                 "document.getElementById('conf-code-peer1').textContent.includes('TOP_SECRET_PRIVATE_KEY_4444=')",
-                timeout=5.0,
                 description="revealed configuration content",
             )
 
@@ -552,7 +551,6 @@ def test_browser_reveal_configuration_explicit_action_and_safe_rendering(tmp_pat
             await browser.wait_for_condition(
                 "document.getElementById('conf-code-peer1').textContent === '' && "
                 "!document.getElementById('conf-masked-peer1').classList.contains('hidden')",
-                timeout=5.0,
                 description="purged secret text and restored masked preview",
             )
 
