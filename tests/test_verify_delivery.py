@@ -595,3 +595,36 @@ def test_documentation_preserves_delivery_and_closure_gates() -> None:
     assert "gh issue comment" in content
     assert "gh issue close" in content
     assert "Never close an issue at implementation completion or review approval" in content
+
+
+def test_documentation_code_scanning_dismissal_lifecycle() -> None:
+    """Ensure docs/agents/issue-tracker.md defines CodeQL alert dismissal lifecycle rules."""
+    doc_path = REPO_ROOT / "docs" / "agents" / "issue-tracker.md"
+    content = doc_path.read_text()
+
+    # Code scanning alerts section
+    assert "## Code Scanning Alerts" in content
+    assert "Dismissal lifecycle" in content
+
+    # Code-dependent delivery and CI verification requirement
+    assert "When an alert dismissal rationale depends on newly changed code" in content
+    assert "verified remote delivery" in content
+
+    # Resolution as fixed and reassessment
+    assert (
+        "allow normal resolution as fixed" in content.lower()
+        or "automatically resolve the alert as `fixed`" in content
+    )
+    assert (
+        "do not unnecessarily dismiss fixed alerts" in content
+        or "do not manually dismiss alerts that resolve as fixed" in content
+    )
+
+    # Pending analysis caution
+    assert "do not claim" in content
+    assert "pending" in content
+
+    # False positive preservation and existing API requirements
+    assert "Pre-existing safeguards" in content or "genuine false positives" in content.lower()
+    assert "Strict 280-character limit" in content
+    assert "Permitted `dismissed_reason` values" in content

@@ -96,6 +96,12 @@ Only after remote verification and CI completion succeed:
 
 When querying, inspecting, dismissing, or verifying GitHub CodeQL code scanning alerts from agent sessions:
 
+- **Dismissal lifecycle**:
+  - **Pre-existing safeguards (genuine false positives)**: Genuine false positives verified against existing safeguards or domain constraints already on trunk may be dismissed immediately without requiring unrelated code delivery.
+  - **Code-dependent dismissals**: When an alert dismissal rationale depends on newly changed code, do not dismiss against unpushed or unverified local commits. Require verified remote delivery and successful CI before dismissal.
+  - **Reassess CodeQL against delivered code**: Reassess CodeQL against the delivered code. Allow normal resolution as fixed where applicable; do not unnecessarily dismiss fixed alerts (CodeQL automatically marks remediated alerts as `fixed` upon scanning the delivered commit).
+  - **Pending analysis**: If CodeQL analysis for the delivered commit is pending or in progress, do not claim or record that the latest code has been assessed.
+
 - **Fetch alert details**: Inspect rule metadata, CWE classifications, and code flow locations:
   ```bash
   gh api repos/<owner>/<repo>/code-scanning/alerts/<number>
