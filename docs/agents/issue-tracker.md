@@ -22,16 +22,30 @@ File issues only into the user's own repo. Never file into `mattpocock/skills` (
 
 When verifying GitHub Actions runs from automated agent sessions:
 - Never invoke `gh run watch` without arguments; interactive TUI prompts will block the agent.
-- Query the specific Run ID scoped to the relevant branch and workflow:
+- Never select the latest workflow run solely by branch and workflow (`--limit 1`). Due to GitHub Actions registration delays immediately following a push, querying solely by branch and workflow can resolve the previous commit's completed run rather than the run for the newly pushed commit.
+- Always resolve the workflow run using the exact full `COMMIT_SHA`, intended branch, and workflow identifier.
+- Handle registration delays with bounded polling using a monotonic deadline (~60 seconds):
   ```bash
-  RUN_ID=$(gh run list --branch "<branch>" --workflow "<workflow-name-or-file>" --limit 1 --json databaseId --jq '.[0].databaseId')
+  DEADLINE=$((SECONDS + 60))
+  RUN_ID=""
+  while [ $SECONDS -lt $DEADLINE ]; do
+    RUN_ID=$(gh run list --commit "$COMMIT_SHA" --branch "<branch>" --workflow "<workflow-name-or-file>" --json databaseId,headSha --jq ".[] | select(.headSha == \"$COMMIT_SHA\") | .databaseId" | head -n 1)
+    if [ -n "$RUN_ID" ]; then
+      break
+    fi
+    sleep 5
+  done
+
+  if [ -z "$RUN_ID" ]; then
+    echo "Error: CI run for commit $COMMIT_SHA on branch <branch> not found within deadline." >&2
+    exit 1
+  fi
   ```
-- Validate that a non-empty `RUN_ID` was returned before watching.
-- Monitor execution non-interactively using the explicit Run ID and exit code propagation:
+- Monitor execution non-interactively using the explicit verified `RUN_ID` and exit code propagation:
   ```bash
   gh run watch "$RUN_ID" --exit-status
   ```
-- If the run fails or cannot be found, report the status accurately with logs (`gh run view "$RUN_ID" --log-failed`).
+- Propagate non-zero exit statuses. If the run fails, is cancelled, or cannot be found, report the status accurately with logs (`gh run view "$RUN_ID" --log-failed`) and halt. Prevent issue closure whenever the corresponding commit's CI run is missing, pending, cancelled, or failed.
 
 ## Direct-to-trunk delivery protocol
 
@@ -76,12 +90,26 @@ Execute the delivery and verify remote persistence:
 
 ### 4. Non-interactive CI monitoring
 
-Monitor remote CI execution to completion following the protocol in **GitHub Actions CI verification** above, scoped to the trunk delivery:
+Monitor remote CI execution to completion following the race-proof protocol in **GitHub Actions CI verification** above, scoped to the trunk delivery:
 ```bash
-RUN_ID=$(gh run list --branch main --workflow "ci.yml" --limit 1 --json databaseId --jq '.[0].databaseId')
-[ -n "$RUN_ID" ] && gh run watch "$RUN_ID" --exit-status
+DEADLINE=$((SECONDS + 60))
+RUN_ID=""
+while [ $SECONDS -lt $DEADLINE ]; do
+  RUN_ID=$(gh run list --commit "$COMMIT_SHA" --branch main --workflow "ci.yml" --json databaseId,headSha --jq ".[] | select(.headSha == \"$COMMIT_SHA\") | .databaseId" | head -n 1)
+  if [ -n "$RUN_ID" ]; then
+    break
+  fi
+  sleep 5
+done
+
+if [ -z "$RUN_ID" ]; then
+  echo "Error: CI run for commit $COMMIT_SHA on branch main not found within deadline." >&2
+  exit 1
+fi
+
+gh run watch "$RUN_ID" --exit-status
 ```
-If CI fails, inspect logs (`gh run view "$RUN_ID" --log-failed`) and do not proceed to issue closure.
+If CI fails, inspect logs (`gh run view "$RUN_ID" --log-failed`) and do not proceed to issue closure. Prevent issue closure if the CI run is missing, pending, cancelled, or failed.
 
 ### 5. Verified issue closure
 
@@ -94,7 +122,7 @@ Only after remote verification and CI completion succeed:
   ```bash
   gh issue close <number>
   ```
-- Never close an issue at implementation completion or review approval; closure requires verified remote delivery.
+- Never close an issue at implementation completion or review approval, or when CI is missing, pending, cancelled, or failed; closure requires verified remote delivery and successful CI completion.
 
 ## Code Scanning Alerts
 
