@@ -24,37 +24,11 @@ When verifying GitHub Actions runs from automated agent sessions:
 - Never invoke `gh run watch` without arguments; interactive TUI prompts will block the agent.
 - Never select the latest workflow run solely by branch and workflow (`--limit 1`). Due to GitHub Actions registration delays immediately following a push, querying solely by branch and workflow can resolve the previous commit's completed run rather than the run for the newly pushed commit.
 - Always resolve the workflow run using the exact full `COMMIT_SHA`, intended branch, and workflow identifier.
-- Handle registration delays and transient API/network errors with bounded polling under errexit (`set -e`) and pipefail using a monotonic deadline (~60 seconds):
+- Automated delivery flows invoke [`scripts/verify-delivery.sh`](../../scripts/verify-delivery.sh), which encapsulates bounded polling under errexit (`set -e`) and pipefail using a monotonic deadline:
   ```bash
-  DEADLINE=$((SECONDS + 60))
-  RUN_ID=""
-  LAST_ERR=""
-  while [ $SECONDS -lt $DEADLINE ]; do
-    if OUTPUT=$(gh run list --commit "$COMMIT_SHA" --branch "<branch>" --workflow "<workflow-name-or-file>" --json databaseId,headSha --jq ".[] | select(.headSha == \"$COMMIT_SHA\") | .databaseId" 2>&1); then
-      LAST_ERR=""
-      RUN_ID=$(echo "$OUTPUT" | grep -E '^[0-9]+$' | head -n 1 || true)
-      if [ -n "$RUN_ID" ]; then
-        break
-      fi
-    else
-      LAST_ERR="$OUTPUT"
-    fi
-    sleep 5
-  done
-
-  if [ -z "$RUN_ID" ]; then
-    echo "Error: CI run for commit $COMMIT_SHA on branch <branch> not found within deadline." >&2
-    if [ -n "$LAST_ERR" ]; then
-      echo "Last GitHub API error: $LAST_ERR" >&2
-    fi
-    exit 1
-  fi
+  ./scripts/verify-delivery.sh --commit "$COMMIT_SHA" --branch "<branch>" --workflow "<workflow-name-or-file>"
   ```
-- Monitor execution non-interactively using the explicit verified `RUN_ID` and exit code propagation:
-  ```bash
-  gh run watch "$RUN_ID" --exit-status
-  ```
-- Propagate non-zero exit statuses. If the run fails, is cancelled, or cannot be found, report the status accurately with logs (`gh run view "$RUN_ID" --log-failed`) and halt. Prevent issue closure whenever the corresponding commit's CI run is missing, pending, cancelled, or failed.
+- Non-interactive monitoring propagates non-zero exit statuses (`gh run watch "$RUN_ID" --exit-status`). If the run fails, is cancelled, or cannot be found, the script reports diagnostics (`gh run view "$RUN_ID" --log-failed`) and halts. Prevent issue closure whenever the corresponding commit's CI run is missing, pending, cancelled, or failed.
 
 ## Direct-to-trunk delivery protocol
 
@@ -84,78 +58,26 @@ Before pushing directly to trunk, agents must verify each of the following gates
   COMMIT_SHA=$(git rev-parse HEAD)
   ```
 
-### 3. Delivery and remote verification
+### 3. Push to remote
 
-Execute the delivery and verify remote persistence:
-- **Push to remote**:
-  ```bash
-  git push origin main
-  ```
-- **Verify remote existence**: Confirm the remote branch incorporates the expected commit with bounded retry for transient network resilience under `set -e` and `pipefail`:
-  ```bash
-  DEADLINE=$((SECONDS + 30))
-  REMOTE_SHA=""
-  LAST_ERR=""
-  LAST_SEEN=""
-  while [ $SECONDS -lt $DEADLINE ]; do
-    if OUTPUT=$(git ls-remote origin refs/heads/main 2>&1); then
-      LAST_ERR=""
-      PARSED_SHA=$(echo "$OUTPUT" | awk '$2 == "refs/heads/main" {print $1; exit}')
-      LAST_SEEN="$PARSED_SHA"
-      if [ -n "$PARSED_SHA" ] && [ "$PARSED_SHA" = "$COMMIT_SHA" ]; then
-        REMOTE_SHA="$PARSED_SHA"
-        break
-      fi
-    else
-      LAST_ERR="$OUTPUT"
-    fi
-    sleep 2
-  done
-
-  if [ -z "$REMOTE_SHA" ] || [ "$REMOTE_SHA" != "$COMMIT_SHA" ]; then
-    echo "Error: Remote verification failed for commit $COMMIT_SHA on branch main within deadline." >&2
-    if [ -n "$LAST_ERR" ]; then
-      echo "Last git error: $LAST_ERR" >&2
-    elif [ -n "$LAST_SEEN" ]; then
-      echo "Remote branch returned unexpected commit: $LAST_SEEN" >&2
-    else
-      echo "Remote branch refs/heads/main not found." >&2
-    fi
-    exit 1
-  fi
-  ```
-
-### 4. Non-interactive CI monitoring
-
-Monitor remote CI execution to completion following the race-proof and errexit-safe protocol in **GitHub Actions CI verification** above, scoped to the trunk delivery:
+Execute the delivery to the remote repository:
 ```bash
-DEADLINE=$((SECONDS + 60))
-RUN_ID=""
-LAST_ERR=""
-while [ $SECONDS -lt $DEADLINE ]; do
-  if OUTPUT=$(gh run list --commit "$COMMIT_SHA" --branch main --workflow "ci.yml" --json databaseId,headSha --jq ".[] | select(.headSha == \"$COMMIT_SHA\") | .databaseId" 2>&1); then
-    LAST_ERR=""
-    RUN_ID=$(echo "$OUTPUT" | grep -E '^[0-9]+$' | head -n 1 || true)
-    if [ -n "$RUN_ID" ]; then
-      break
-    fi
-  else
-    LAST_ERR="$OUTPUT"
-  fi
-  sleep 5
-done
-
-if [ -z "$RUN_ID" ]; then
-  echo "Error: CI run for commit $COMMIT_SHA on branch main not found within deadline." >&2
-  if [ -n "$LAST_ERR" ]; then
-    echo "Last GitHub API error: $LAST_ERR" >&2
-  fi
-  exit 1
-fi
-
-gh run watch "$RUN_ID" --exit-status
+git push origin main
 ```
-If CI fails, inspect logs (`gh run view "$RUN_ID" --log-failed`) and do not proceed to issue closure. Prevent issue closure if the CI run is missing, pending, cancelled, or failed.
+
+### 4. Remote delivery and CI verification
+
+Verify remote commit persistence on `origin` and monitor the associated CI workflow run to completion non-interactively using [`scripts/verify-delivery.sh`](../../scripts/verify-delivery.sh):
+```bash
+./scripts/verify-delivery.sh --commit "$COMMIT_SHA" --branch main --workflow "ci.yml"
+```
+The script encapsulates:
+- Bounded monotonic deadline polling for transient network/registration delays under `set -e` and `pipefail`.
+- Exact SHA, branch, and workflow matching against `origin` and GitHub Actions.
+- Non-interactive CI monitoring via `gh run watch "$RUN_ID" --exit-status` and failure diagnostics via `gh run view "$RUN_ID" --log-failed`.
+- Fail-closed semantics: halts with non-zero exit status on missing commits, mismatched SHAs, timeouts, or failed/cancelled CI runs.
+
+If verification fails, inspect the diagnostics and do not proceed to issue closure. Prevent issue closure whenever remote delivery or CI verification is unsuccessful.
 
 ### 5. Verified issue closure
 
