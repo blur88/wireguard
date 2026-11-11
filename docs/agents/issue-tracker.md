@@ -91,10 +91,38 @@ Execute the delivery and verify remote persistence:
   ```bash
   git push origin main
   ```
-- **Verify remote existence**: Confirm the remote branch incorporates the expected commit:
+- **Verify remote existence**: Confirm the remote branch incorporates the expected commit with bounded retry for transient network resilience under `set -e` and `pipefail`:
   ```bash
-  git fetch origin main
-  git rev-parse origin/main  # Must equal $COMMIT_SHA
+  DEADLINE=$((SECONDS + 30))
+  REMOTE_SHA=""
+  LAST_ERR=""
+  LAST_SEEN=""
+  while [ $SECONDS -lt $DEADLINE ]; do
+    if OUTPUT=$(git ls-remote origin refs/heads/main 2>&1); then
+      LAST_ERR=""
+      PARSED_SHA=$(echo "$OUTPUT" | awk '$2 == "refs/heads/main" {print $1; exit}')
+      LAST_SEEN="$PARSED_SHA"
+      if [ -n "$PARSED_SHA" ] && [ "$PARSED_SHA" = "$COMMIT_SHA" ]; then
+        REMOTE_SHA="$PARSED_SHA"
+        break
+      fi
+    else
+      LAST_ERR="$OUTPUT"
+    fi
+    sleep 2
+  done
+
+  if [ -z "$REMOTE_SHA" ] || [ "$REMOTE_SHA" != "$COMMIT_SHA" ]; then
+    echo "Error: Remote verification failed for commit $COMMIT_SHA on branch main within deadline." >&2
+    if [ -n "$LAST_ERR" ]; then
+      echo "Last git error: $LAST_ERR" >&2
+    elif [ -n "$LAST_SEEN" ]; then
+      echo "Remote branch returned unexpected commit: $LAST_SEEN" >&2
+    else
+      echo "Remote branch refs/heads/main not found." >&2
+    fi
+    exit 1
+  fi
   ```
 
 ### 4. Non-interactive CI monitoring
