@@ -24,20 +24,29 @@ When verifying GitHub Actions runs from automated agent sessions:
 - Never invoke `gh run watch` without arguments; interactive TUI prompts will block the agent.
 - Never select the latest workflow run solely by branch and workflow (`--limit 1`). Due to GitHub Actions registration delays immediately following a push, querying solely by branch and workflow can resolve the previous commit's completed run rather than the run for the newly pushed commit.
 - Always resolve the workflow run using the exact full `COMMIT_SHA`, intended branch, and workflow identifier.
-- Handle registration delays with bounded polling using a monotonic deadline (~60 seconds):
+- Handle registration delays and transient API/network errors with bounded polling under errexit (`set -e`) and pipefail using a monotonic deadline (~60 seconds):
   ```bash
   DEADLINE=$((SECONDS + 60))
   RUN_ID=""
+  LAST_ERR=""
   while [ $SECONDS -lt $DEADLINE ]; do
-    RUN_ID=$(gh run list --commit "$COMMIT_SHA" --branch "<branch>" --workflow "<workflow-name-or-file>" --json databaseId,headSha --jq ".[] | select(.headSha == \"$COMMIT_SHA\") | .databaseId" | head -n 1)
-    if [ -n "$RUN_ID" ]; then
-      break
+    if OUTPUT=$(gh run list --commit "$COMMIT_SHA" --branch "<branch>" --workflow "<workflow-name-or-file>" --json databaseId,headSha --jq ".[] | select(.headSha == \"$COMMIT_SHA\") | .databaseId" 2>&1); then
+      LAST_ERR=""
+      RUN_ID=$(echo "$OUTPUT" | grep -E '^[0-9]+$' | head -n 1 || true)
+      if [ -n "$RUN_ID" ]; then
+        break
+      fi
+    else
+      LAST_ERR="$OUTPUT"
     fi
     sleep 5
   done
 
   if [ -z "$RUN_ID" ]; then
     echo "Error: CI run for commit $COMMIT_SHA on branch <branch> not found within deadline." >&2
+    if [ -n "$LAST_ERR" ]; then
+      echo "Last GitHub API error: $LAST_ERR" >&2
+    fi
     exit 1
   fi
   ```
@@ -90,20 +99,29 @@ Execute the delivery and verify remote persistence:
 
 ### 4. Non-interactive CI monitoring
 
-Monitor remote CI execution to completion following the race-proof protocol in **GitHub Actions CI verification** above, scoped to the trunk delivery:
+Monitor remote CI execution to completion following the race-proof and errexit-safe protocol in **GitHub Actions CI verification** above, scoped to the trunk delivery:
 ```bash
 DEADLINE=$((SECONDS + 60))
 RUN_ID=""
+LAST_ERR=""
 while [ $SECONDS -lt $DEADLINE ]; do
-  RUN_ID=$(gh run list --commit "$COMMIT_SHA" --branch main --workflow "ci.yml" --json databaseId,headSha --jq ".[] | select(.headSha == \"$COMMIT_SHA\") | .databaseId" | head -n 1)
-  if [ -n "$RUN_ID" ]; then
-    break
+  if OUTPUT=$(gh run list --commit "$COMMIT_SHA" --branch main --workflow "ci.yml" --json databaseId,headSha --jq ".[] | select(.headSha == \"$COMMIT_SHA\") | .databaseId" 2>&1); then
+    LAST_ERR=""
+    RUN_ID=$(echo "$OUTPUT" | grep -E '^[0-9]+$' | head -n 1 || true)
+    if [ -n "$RUN_ID" ]; then
+      break
+    fi
+  else
+    LAST_ERR="$OUTPUT"
   fi
   sleep 5
 done
 
 if [ -z "$RUN_ID" ]; then
   echo "Error: CI run for commit $COMMIT_SHA on branch main not found within deadline." >&2
+  if [ -n "$LAST_ERR" ]; then
+    echo "Last GitHub API error: $LAST_ERR" >&2
+  fi
   exit 1
 fi
 
