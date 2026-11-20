@@ -1,0 +1,21 @@
+# Operating system files
+.DS_Store
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# WireGuard private keys & secrets
+*.key
+*.priv
+*.psk
+*privatekey*
+*private_key*
+*presharedkey*
+*preshared_key*
+
+# WireGuard local configuration files (containing private keys)
+*.conf
+!*.example.conf
+!*.conf.example
